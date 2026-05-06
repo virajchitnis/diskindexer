@@ -1,0 +1,17 @@
+# Go toolchain (local, not installed globally)
+go/
+go*.darwin-*.tar.gz
+go*.linux-*.tar.gz
+
+# Build output
+diskindexer
+
+# Go test cache and coverage
+*.test
+*.out
+
+# Claude Code user-local settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
