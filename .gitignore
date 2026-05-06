@@ -5,6 +5,7 @@ go*.linux-*.tar.gz
 
 # Build output
 diskindexer
+diskindexer-*
 
 # Go test cache and coverage
 *.test
