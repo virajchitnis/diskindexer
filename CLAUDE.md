@@ -10,19 +10,19 @@ Indexes external disks so they can be searched without the disk being plugged in
 
 ```bash
 # Mac (ARM64) — uses the local Go toolchain extracted under go/
-./go/bin/go build -o diskindexer .
+../go/bin/go build -o diskindexer .
 ./diskindexer --help
 
 # Cross-compile for Linux AMD64 (e.g. Ubuntu server)
-GOOS=linux GOARCH=amd64 ./go/bin/go build -o diskindexer-linux-amd64 .
+GOOS=linux GOARCH=amd64 ../go/bin/go build -o diskindexer-linux-amd64 .
 ```
 
 ## Test
 
 ```bash
-./go/bin/go test ./...
-./go/bin/go test ./internal/... -v        # verbose unit tests
-./go/bin/go test ./internal/db/... -run TestSchema  # specific test
+../go/bin/go test ./...
+../go/bin/go test ./internal/... -v        # verbose unit tests
+../go/bin/go test ./internal/db/... -run TestSchema  # specific test
 ```
 
 ## Project Structure

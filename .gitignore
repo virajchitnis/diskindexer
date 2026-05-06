@@ -1,8 +1,3 @@
-# Go toolchain (local, not installed globally)
-go/
-go*.darwin-*.tar.gz
-go*.linux-*.tar.gz
-
 # Build output
 diskindexer
 diskindexer-*
