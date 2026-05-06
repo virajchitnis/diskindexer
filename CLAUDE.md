@@ -9,16 +9,20 @@ Indexes external disks so they can be searched without the disk being plugged in
 ## Build & Run
 
 ```bash
-go build -o diskindexer ./...
+# Mac (ARM64) — uses the local Go toolchain extracted under go/
+./go/bin/go build -o diskindexer .
 ./diskindexer --help
+
+# Cross-compile for Linux AMD64 (e.g. Ubuntu server)
+GOOS=linux GOARCH=amd64 ./go/bin/go build -o diskindexer-linux-amd64 .
 ```
 
 ## Test
 
 ```bash
-go test ./...
-go test ./internal/... -v        # verbose unit tests
-go test ./internal/db/... -run TestSchema  # specific test
+./go/bin/go test ./...
+./go/bin/go test ./internal/... -v        # verbose unit tests
+./go/bin/go test ./internal/db/... -run TestSchema  # specific test
 ```
 
 ## Project Structure
@@ -36,7 +40,7 @@ internal/
   db/                    # SQLite schema, migrations, all DB operations
   indexer/               # filesystem walk, change detection, incremental logic
   search/                # query building, filter application, multi-DB merge
-tui/                     # bubbletea TUI (Phase 2)
+tui/                     # bubbletea interactive TUI (model, styles, tests)
 testdata/                # synthetic file trees for integration tests
 ```
 
@@ -45,7 +49,7 @@ testdata/                # synthetic file trees for integration tests
 - **Pure-Go SQLite** (`modernc.org/sqlite`): no CGo, no runtime deps, single static binary on Linux and macOS.
 - **`.diskindex` extension**: standard SQLite file, custom extension for clarity.
 - **Incremental indexing via `(path, size, mtime)`**: no hashing. Fast on 5TB+.
-- **Collections = top-level folders** on a disk, auto-detected on index. Manual override via `--collection label:path`.
+- **Collections = top-level folders** on a disk, auto-detected on index. Manual override via `--collection "Label:/absolute/path"`.
 - **Multi-DB search**: each `.diskindex` opened as a separate connection; results merged in Go before display.
 - **FTS5 virtual table** on `(name, path)` with triggers to stay in sync — powers fast text search.
 
@@ -68,8 +72,8 @@ known_dbs = [
 ## CLI Commands
 
 ```bash
-diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:path"] [--force]
-diskindexer reindex --disk "Label" [--db path]
+diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--force]
+diskindexer reindex <mount-path> --disk "Label" [--db path]
 diskindexer disks [--db path]
 diskindexer collections --disk "Label" [--db path]
 diskindexer rename-collection <id> <new-label> [--db path]
@@ -82,8 +86,10 @@ diskindexer search [--db path]...
 |---|---|
 | `modernc.org/sqlite` | Pure-Go SQLite driver |
 | `spf13/cobra` | CLI commands and flags |
-| `charmbracelet/bubbletea` | TUI framework (Phase 2) |
-| `charmbracelet/bubbles` | TUI components (Phase 2) |
-| `charmbracelet/lipgloss` | TUI styling (Phase 2) |
+| `charmbracelet/bubbletea` | TUI framework |
+| `charmbracelet/bubbles` | TUI components (text input) |
+| `charmbracelet/lipgloss` | TUI styling |
+| `charmbracelet/x/term` | TTY detection for TUI vs text output |
+| `atotto/clipboard` | Clipboard write on Enter in TUI |
 | `BurntSushi/toml` | Config file parsing |
 | `stretchr/testify` | Test assertions |
