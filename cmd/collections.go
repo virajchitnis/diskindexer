@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -74,7 +75,10 @@ func runRenameCollection(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid collection ID %q: must be a number", args[0])
 	}
-	newLabel := args[1]
+	newLabel := strings.TrimSpace(args[1])
+	if newLabel == "" {
+		return fmt.Errorf("new label must not be empty")
+	}
 
 	cfg := loadConfig()
 	database := openDB(resolveSingleDB(cfg))

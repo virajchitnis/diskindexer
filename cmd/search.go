@@ -167,6 +167,13 @@ func runTextSearch(dbs []*db.DB, query string) error {
 		params.ModBefore = params.ModBefore.Add(24*time.Hour - time.Second)
 	}
 
+	if params.MinSize > 0 && params.MaxSize > 0 && params.MinSize > params.MaxSize {
+		return fmt.Errorf("--min-size (%s) is larger than --max-size (%s)", searchMinSize, searchMaxSize)
+	}
+	if !params.ModAfter.IsZero() && !params.ModBefore.IsZero() && params.ModAfter.After(params.ModBefore) {
+		return fmt.Errorf("--after (%s) is later than --before (%s)", searchAfter, searchBefore)
+	}
+
 	results, err := search.Across(dbs, params)
 	if err != nil {
 		return err

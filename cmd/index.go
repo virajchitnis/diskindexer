@@ -50,14 +50,21 @@ func init() {
 
 func runIndex(cmd *cobra.Command, args []string) error {
 	mountPath := args[0]
-	if _, err := os.Stat(mountPath); err != nil {
+	info, err := os.Stat(mountPath)
+	if err != nil {
 		return fmt.Errorf("mount path %q: %w", mountPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("mount path %q is a file, not a directory", mountPath)
 	}
 
 	var collSpecs []indexer.CollectionSpec
 	for _, raw := range indexCollections {
 		spec, err := indexer.ParseCollectionSpec(raw)
 		if err != nil {
+			return err
+		}
+		if err := spec.ValidateUnderMount(mountPath); err != nil {
 			return err
 		}
 		collSpecs = append(collSpecs, spec)

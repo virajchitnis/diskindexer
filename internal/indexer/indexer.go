@@ -304,3 +304,12 @@ func ParseCollectionSpec(s string) (CollectionSpec, error) {
 	}
 	return CollectionSpec{Label: label, RootPath: path}, nil
 }
+
+// ValidateUnderMount returns an error if the collection path is not under mountPath.
+func (s CollectionSpec) ValidateUnderMount(mountPath string) error {
+	rel, err := filepath.Rel(mountPath, s.RootPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("collection %q: path %q is not under mount path %q", s.Label, s.RootPath, mountPath)
+	}
+	return nil
+}
