@@ -15,6 +15,9 @@ Indexes external disks so they can be searched without the disk being plugged in
 
 # Cross-compile for Linux AMD64 (e.g. Ubuntu server)
 GOOS=linux GOARCH=amd64 ../go/bin/go build -o diskindexer-linux-amd64 .
+
+# Install to server (enterprise.virajchitnis.com, user: viraj)
+scp diskindexer-linux-amd64 viraj@enterprise.virajchitnis.com:~/.local/bin/diskindexer
 ```
 
 ## Test
