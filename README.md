@@ -23,7 +23,7 @@ Go 1.21 or later is required to build from source.
 ### Build from source
 
 ```bash
-git clone https://github.com/yourusername/diskindexer
+git clone https://github.com/virajchitnis/diskindexer
 cd diskindexer
 go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer .
 ```
