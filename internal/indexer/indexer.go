@@ -70,13 +70,13 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	seenPaths := make(map[string]struct{}, len(fileMap))
 
 	for _, coll := range colls {
-		if err := walkCollection(database, disk.ID, coll, opts.MountPath, fileMap, seenPaths, stats); err != nil {
+		if err := walkCollection(database, disk.ID, coll, opts.MountPath, opts.DiskLabel, fileMap, seenPaths, stats); err != nil {
 			return nil, fmt.Errorf("walk collection %q: %w", coll.Label, err)
 		}
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
 	}
 
-	if err := walkRoot(database, disk.ID, opts.MountPath, colls, fileMap, seenPaths, stats); err != nil {
+	if err := walkRoot(database, disk.ID, opts.MountPath, opts.DiskLabel, colls, fileMap, seenPaths, stats); err != nil {
 		return nil, fmt.Errorf("walk root: %w", err)
 	}
 
@@ -139,6 +139,7 @@ func walkCollection(
 	diskID int64,
 	coll *db.Collection,
 	mountPath string,
+	diskLabel string,
 	fileMap map[string]*db.File,
 	seenPaths map[string]struct{},
 	stats *Stats,
@@ -158,10 +159,11 @@ func walkCollection(
 			return nil
 		}
 
-		relPath, relErr := filepath.Rel(mountPath, absPath)
+		mountRel, relErr := filepath.Rel(mountPath, absPath)
 		if relErr != nil {
 			return relErr
 		}
+		relPath := diskLabel + "/" + mountRel
 
 		seenPaths[relPath] = struct{}{}
 
@@ -215,6 +217,7 @@ func walkRoot(
 	database *db.DB,
 	diskID int64,
 	mountPath string,
+	diskLabel string,
 	colls []*db.Collection,
 	fileMap map[string]*db.File,
 	seenPaths map[string]struct{},
@@ -248,7 +251,7 @@ func walkRoot(
 		if err != nil {
 			continue
 		}
-		relPath := e.Name()
+		relPath := diskLabel + "/" + e.Name()
 		seenPaths[relPath] = struct{}{}
 
 		if existing, ok := fileMap[relPath]; ok {
