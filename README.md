@@ -25,18 +25,25 @@ Go 1.21 or later is required to build from source.
 ```bash
 git clone https://github.com/virajchitnis/diskindexer
 cd diskindexer
-go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer .
+make build
 ```
 
 ### Cross-compile for Linux (from macOS)
 
 ```bash
-GOOS=linux GOARCH=amd64 go build \
-  -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" \
-  -o diskindexer-linux-amd64 .
+make build-linux
 ```
 
 The resulting binary is statically linked and requires no runtime dependencies on the target machine.
+
+### Available make targets
+
+| Target | Description |
+|---|---|
+| `make build` | Build for the current platform |
+| `make build-linux` | Cross-compile for Linux AMD64 |
+| `make test` | Run all tests |
+| `make clean` | Remove build artifacts |
 
 ## Quick Start
 

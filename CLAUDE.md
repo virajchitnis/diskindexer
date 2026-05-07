@@ -8,24 +8,29 @@ Indexes external disks so they can be searched without the disk being plugged in
 
 ## Build & Run
 
+The Makefile auto-detects the Go binary: uses `../go/bin/go` if present
+(local toolchain), otherwise falls back to `go` on PATH.
+
 ```bash
-# Mac (ARM64) — uses the local Go toolchain extracted under go/
-../go/bin/go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer .
-./diskindexer --version
+make build          # build for current platform
+make build-linux    # cross-compile for Linux AMD64
+make install        # build-linux + scp to enterprise.virajchitnis.com
+make test           # run all tests
+make clean          # remove build artifacts
+```
 
-# Cross-compile for Linux AMD64 (e.g. Ubuntu server)
-GOOS=linux GOARCH=amd64 ../go/bin/go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer-linux-amd64 .
-
-# Install to server (enterprise.virajchitnis.com, user: viraj)
-scp diskindexer-linux-amd64 viraj@enterprise.virajchitnis.com:~/.local/bin/diskindexer
+Raw commands (if not using make):
+```bash
+go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer .
 ```
 
 ## Test
 
 ```bash
-../go/bin/go test ./...
-../go/bin/go test ./internal/... -v        # verbose unit tests
-../go/bin/go test ./internal/db/... -run TestSchema  # specific test
+make test
+# or verbose:
+../go/bin/go test ./internal/... -v
+../go/bin/go test ./internal/db/... -run TestSchema
 ```
 
 ## Project Structure
