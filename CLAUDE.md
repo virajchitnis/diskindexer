@@ -78,10 +78,20 @@ known_dbs = [
 diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--force]
 diskindexer reindex <mount-path> --disk "Label" [--db path]
 diskindexer disks [--db path]
-diskindexer collections --disk "Label" [--db path]
+diskindexer delete-disk --disk "Label" [--db path]
+diskindexer collections [--disk "Label"] [--db path]
 diskindexer rename-collection <id> <new-label> [--db path]
-diskindexer search [--db path]...
+diskindexer delete-collection <id> [--db path]
+diskindexer search [query] [--db path]... [--no-tui]
+diskindexer --version
 ```
+
+## Development Conventions
+
+- **Keep README.md in sync**: any change that affects user-facing behaviour (new commands, changed flags, TUI controls, etc.) must also update `README.md` in the same PR/commit.
+- **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
+- **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
+- **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
 
 ## Libraries
 
