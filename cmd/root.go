@@ -11,9 +11,13 @@ import (
 
 var dbFlags []string // values from --db flags
 
+// version is set at build time via -ldflags "-X github.com/viraj/diskindexer/cmd.version=..."
+var version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "diskindexer",
-	Short: "Create and search offline indexes of external hard disks",
+	Use:     "diskindexer",
+	Short:   "Create and search offline indexes of external hard disks",
+	Version: version,
 	Long: `diskindexer indexes the file metadata of external disks into a portable
 .diskindex file (SQLite) so you can search them without the disk plugged in.`,
 }
@@ -25,6 +29,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Version = version
 	rootCmd.PersistentFlags().StringArrayVar(&dbFlags, "db", nil,
 		"path to a .diskindex file (can be repeated for multi-DB operations)")
 }

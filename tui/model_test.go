@@ -224,7 +224,7 @@ func TestBuildParams_EmptyQuery(t *testing.T) {
 	assert.Equal(t, "", p.Query)
 	assert.Nil(t, p.IsDir)
 	assert.Equal(t, "", p.DiskLabel)
-	assert.Equal(t, 500, p.Limit)
+	assert.Equal(t, 0, p.Limit)
 }
 
 func TestBuildParams_WithQuery(t *testing.T) {
@@ -298,6 +298,106 @@ func TestTypeModeLabel(t *testing.T) {
 	assert.Equal(t, "All", typeModeAll.label())
 	assert.Equal(t, "Files", typeModeFiles.label())
 	assert.Equal(t, "Dirs", typeModeDirs.label())
+}
+
+// ── Sorting ───────────────────────────────────────────────────────────────────
+
+func TestSort_DefaultIsNameAsc(t *testing.T) {
+	m := newTestModel("", nil)
+	assert.Equal(t, sortNameAsc, m.sort)
+}
+
+func TestSort_CyclesOnSKey(t *testing.T) {
+	m := newTestModel("", nil)
+	m.inputFocused = false
+	m = injectResults(m, []search.Result{
+		makeResult("b.jpg", "", "", "b.jpg", 0),
+		makeResult("a.jpg", "", "", "a.jpg", 0),
+	})
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortNameDesc, m.sort)
+	assert.Equal(t, "b.jpg", m.results[0].File.Name) // desc: b before a
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortSizeAsc, m.sort)
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortSizeDesc, m.sort)
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortDateAsc, m.sort)
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortDateDesc, m.sort)
+
+	m = sendKey(m, "s")
+	assert.Equal(t, sortNameAsc, m.sort) // wraps back
+}
+
+func TestSort_BySize(t *testing.T) {
+	m := newTestModel("", nil)
+	m.inputFocused = false
+	m = injectResults(m, []search.Result{
+		makeResult("big.jpg", "", "", "big.jpg", 3000),
+		makeResult("small.jpg", "", "", "small.jpg", 100),
+		makeResult("mid.jpg", "", "", "mid.jpg", 500),
+	})
+
+	// Default is name asc; switch to size asc
+	m = sendKey(m, "s") // name desc
+	m = sendKey(m, "s") // size asc
+	assert.Equal(t, int64(100), m.results[0].File.Size)
+	assert.Equal(t, int64(500), m.results[1].File.Size)
+	assert.Equal(t, int64(3000), m.results[2].File.Size)
+
+	m = sendKey(m, "s") // size desc
+	assert.Equal(t, int64(3000), m.results[0].File.Size)
+	assert.Equal(t, int64(100), m.results[2].File.Size)
+}
+
+func TestSort_ByDate(t *testing.T) {
+	older := search.Result{File: &db.File{Name: "old.jpg", ModifiedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	newer := search.Result{File: &db.File{Name: "new.jpg", ModifiedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}}
+
+	m := newTestModel("", nil)
+	m.inputFocused = false
+	m = injectResults(m, []search.Result{newer, older})
+
+	// Advance to date asc
+	for i := 0; i < int(sortDateAsc); i++ {
+		m = sendKey(m, "s")
+	}
+	assert.Equal(t, "old.jpg", m.results[0].File.Name)
+
+	m = sendKey(m, "s") // date desc
+	assert.Equal(t, "new.jpg", m.results[0].File.Name)
+}
+
+func TestSort_ResetsResultsOnNewSearch(t *testing.T) {
+	m := newTestModel("", nil)
+	m.inputFocused = false
+
+	// Switch to size desc
+	m = sendKey(m, "s") // name desc
+	m = sendKey(m, "s") // size asc
+	m = sendKey(m, "s") // size desc
+
+	// New results should be sorted by the current mode (size desc)
+	m = injectResults(m, []search.Result{
+		makeResult("small.jpg", "", "", "small.jpg", 100),
+		makeResult("big.jpg", "", "", "big.jpg", 3000),
+	})
+	assert.Equal(t, int64(3000), m.results[0].File.Size)
+}
+
+func TestSortModeLabel(t *testing.T) {
+	assert.Equal(t, "NAME ▲", sortNameAsc.label())
+	assert.Equal(t, "NAME ▼", sortNameDesc.label())
+	assert.Equal(t, "SIZE ▲", sortSizeAsc.label())
+	assert.Equal(t, "SIZE ▼", sortSizeDesc.label())
+	assert.Equal(t, "MODIFIED ▲", sortDateAsc.label())
+	assert.Equal(t, "MODIFIED ▼", sortDateDesc.label())
 }
 
 // ── View rendering ────────────────────────────────────────────────────────────

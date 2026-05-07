@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +47,43 @@ func (t typeMode) label() string {
 	}
 }
 
+// ── Sort constants ────────────────────────────────────────────────────────────
+
+type sortMode int
+
+const (
+	sortNameAsc  sortMode = iota // NAME ▲
+	sortNameDesc                 // NAME ▼
+	sortSizeAsc                  // SIZE ▲
+	sortSizeDesc                 // SIZE ▼
+	sortDateAsc                  // MODIFIED ▲
+	sortDateDesc                 // MODIFIED ▼
+	sortModeCount
+)
+
+func (s sortMode) col() string {
+	switch s {
+	case sortSizeAsc, sortSizeDesc:
+		return "SIZE"
+	case sortDateAsc, sortDateDesc:
+		return "MODIFIED"
+	default:
+		return "NAME"
+	}
+}
+
+func (s sortMode) asc() bool {
+	return s == sortNameAsc || s == sortSizeAsc || s == sortDateAsc
+}
+
+func (s sortMode) label() string {
+	arrow := "▲"
+	if !s.asc() {
+		arrow = "▼"
+	}
+	return s.col() + " " + arrow
+}
+
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 // Model is the bubbletea model for the interactive search TUI.
@@ -57,6 +95,7 @@ type Model struct {
 	diskNames []string // index 0 is always "(all)"
 	diskIdx   int
 	typeMode  typeMode
+	sort      sortMode
 
 	// results
 	results []search.Result
@@ -141,6 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = msg.err
 		m.results = msg.results
+		applySortMode(m.results, m.sort)
 		m.cursor = 0
 		m.offset = 0
 		return m, nil
@@ -245,6 +285,13 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.typeMode = (m.typeMode + 1) % 3
 		return m, m.triggerSearch()
 
+	case "s":
+		m.sort = (m.sort + 1) % sortModeCount
+		applySortMode(m.results, m.sort)
+		m.cursor = 0
+		m.offset = 0
+		return m, nil
+
 	case "enter":
 		if len(m.results) == 0 || m.cursor >= len(m.results) {
 			return m, nil
@@ -293,7 +340,7 @@ func (m Model) BuildParams() db.SearchParams {
 func (m Model) buildParams() db.SearchParams {
 	p := db.SearchParams{
 		Query: m.input.Value(),
-		Limit: 500,
+		Limit: 0, // no limit in TUI
 	}
 	if m.diskIdx > 0 && m.diskIdx < len(m.diskNames) {
 		p.DiskLabel = m.diskNames[m.diskIdx]
@@ -386,7 +433,12 @@ func (m Model) renderFilters() string {
 		styles.label.Render(" Type: ") +
 		styles.filterVal.Render(m.typeMode.label())
 
-	return "  " + disk + styles.dim.Render("   ") + typ
+	srt := styles.filterKey.Render("s") +
+		styles.label.Render(" Sort: ") +
+		styles.filterVal.Render(m.sort.label())
+
+	sep := styles.dim.Render("   ")
+	return "  " + disk + sep + typ + sep + srt
 }
 
 func (m Model) renderHeaders() string {
@@ -469,9 +521,6 @@ func (m Model) renderStatus() string {
 	// Line 1: result count + path/status message
 	count := styles.count.Render(fmt.Sprintf(" %d", len(m.results)))
 	suffix := " results"
-	if len(m.results) == 500 {
-		suffix += styles.dim.Render(" (limit reached — refine your query)")
-	}
 
 	var detail string
 	if m.statusMsg != "" {
@@ -490,6 +539,7 @@ func (m Model) renderStatus() string {
 		styles.dim.Render("[/]") + " search" + sep +
 		styles.dim.Render("[d]") + " disk" + sep +
 		styles.dim.Render("[t]") + " type" + sep +
+		styles.dim.Render("[s]") + " sort" + sep +
 		styles.dim.Render("[q]") + " quit"
 
 	return line1 + "\n" + hints + "\n"
@@ -524,6 +574,27 @@ func (m Model) colWidths() colWidths {
 }
 
 // ── String helpers ────────────────────────────────────────────────────────────
+
+// applySortMode sorts results in-place according to s.
+func applySortMode(results []search.Result, s sortMode) {
+	sort.SliceStable(results, func(i, j int) bool {
+		a, b := results[i].File, results[j].File
+		switch s {
+		case sortNameDesc:
+			return strings.ToLower(a.Name) > strings.ToLower(b.Name)
+		case sortSizeAsc:
+			return a.Size < b.Size
+		case sortSizeDesc:
+			return a.Size > b.Size
+		case sortDateAsc:
+			return a.ModifiedAt.Before(b.ModifiedAt)
+		case sortDateDesc:
+			return a.ModifiedAt.After(b.ModifiedAt)
+		default: // sortNameAsc
+			return strings.ToLower(a.Name) < strings.ToLower(b.Name)
+		}
+	})
+}
 
 // truncate shortens s to w runes, appending "…" if truncated.
 func truncate(s string, w int) string {

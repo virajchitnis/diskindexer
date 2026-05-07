@@ -324,7 +324,7 @@ type SearchParams struct {
 	MaxSize   int64  // 0 = no maximum
 	ModAfter  time.Time
 	ModBefore time.Time
-	Limit     int // 0 = default (50)
+	Limit     int // 0 = no limit; text mode defaults to 50 via flag
 	Offset    int
 }
 
@@ -342,9 +342,10 @@ func (d *DB) Search(p SearchParams) ([]*File, error) {
 		p.DiskID = disk.ID
 	}
 
+	// 0 means no limit; SQLite LIMIT -1 is the canonical "unlimited" value.
 	limit := p.Limit
-	if limit <= 0 {
-		limit = 50
+	if limit == 0 {
+		limit = -1
 	}
 
 	if p.Query != "" {
