@@ -15,8 +15,20 @@ var disksCmd = &cobra.Command{
 	RunE:  runDisks,
 }
 
+var deleteDiskCmd = &cobra.Command{
+	Use:   "delete-disk",
+	Short: "Remove a disk and all its files from the index",
+	Long: `Removes the disk entry and all associated collections and files from the
+index. This only affects the index — files on the actual disk are untouched.`,
+	RunE: runDeleteDisk,
+}
+
+var deleteDiskLabel string
+
 func init() {
-	rootCmd.AddCommand(disksCmd)
+	deleteDiskCmd.Flags().StringVar(&deleteDiskLabel, "disk", "", "disk label to delete (required)")
+	_ = deleteDiskCmd.MarkFlagRequired("disk")
+	rootCmd.AddCommand(disksCmd, deleteDiskCmd)
 }
 
 func runDisks(_ *cobra.Command, _ []string) error {
@@ -46,4 +58,20 @@ func runDisks(_ *cobra.Command, _ []string) error {
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", d.ID, d.Label, d.Description, lastIndexed)
 	}
 	return w.Flush()
+}
+
+func runDeleteDisk(_ *cobra.Command, _ []string) error {
+	cfg := loadConfig()
+	database := openDB(resolveSingleDB(cfg))
+	defer database.Close()
+
+	found, err := database.DeleteDisk(deleteDiskLabel)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("disk %q not found", deleteDiskLabel)
+	}
+	fmt.Printf("Disk %q and all its collections and files removed from the index.\n", deleteDiskLabel)
+	return nil
 }

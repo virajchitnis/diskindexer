@@ -26,9 +26,18 @@ var renameCollectionCmd = &cobra.Command{
 	RunE:  runRenameCollection,
 }
 
+var deleteCollectionCmd = &cobra.Command{
+	Use:   "delete-collection <id>",
+	Short: "Remove a collection and all its files from the index",
+	Long: `Removes the collection entry and all files belonging to it from the index.
+This only affects the index — files on the actual disk are untouched.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runDeleteCollection,
+}
+
 func init() {
 	collectionsCmd.Flags().StringVar(&collectionsDiskLabel, "disk", "", "filter to collections on this disk")
-	rootCmd.AddCommand(collectionsCmd, renameCollectionCmd)
+	rootCmd.AddCommand(collectionsCmd, renameCollectionCmd, deleteCollectionCmd)
 }
 
 func runCollections(_ *cobra.Command, _ []string) error {
@@ -88,5 +97,26 @@ func runRenameCollection(_ *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Collection %d renamed to %q\n", id, newLabel)
+	return nil
+}
+
+func runDeleteCollection(_ *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid collection ID %q: must be a number", args[0])
+	}
+
+	cfg := loadConfig()
+	database := openDB(resolveSingleDB(cfg))
+	defer database.Close()
+
+	found, err := database.DeleteCollection(id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("collection %d not found", id)
+	}
+	fmt.Printf("Collection %d and all its files removed from the index.\n", id)
 	return nil
 }

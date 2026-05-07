@@ -274,6 +274,42 @@ func (d *DB) DeleteAllFilesForDisk(diskID int64) error {
 	return err
 }
 
+// DeleteDisk removes a disk and all its collections and files (via CASCADE).
+// Returns false if no disk with that label exists.
+func (d *DB) DeleteDisk(label string) (bool, error) {
+	res, err := d.sql.Exec(`DELETE FROM disks WHERE label = ?`, label)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteCollection removes a collection and all its files from the index.
+// Files are deleted first to avoid the ON DELETE SET NULL behaviour on
+// collection_id, which would orphan them rather than remove them.
+// Returns false if no collection with that ID exists.
+func (d *DB) DeleteCollection(id int64) (bool, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err = tx.Exec(`DELETE FROM files WHERE collection_id = ?`, id); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`DELETE FROM collections WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
+	return true, tx.Commit()
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // SearchParams defines filters for a file search.
