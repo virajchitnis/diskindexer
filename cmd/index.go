@@ -64,9 +64,6 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := spec.ValidateUnderMount(mountPath); err != nil {
-			return err
-		}
 		collSpecs = append(collSpecs, spec)
 	}
 

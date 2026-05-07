@@ -70,7 +70,7 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	seenPaths := make(map[string]struct{}, len(fileMap))
 
 	for _, coll := range colls {
-		if err := walkCollection(database, disk.ID, coll, opts.MountPath, opts.DiskLabel, fileMap, seenPaths, stats); err != nil {
+		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats); err != nil {
 			return nil, fmt.Errorf("walk collection %q: %w", coll.Label, err)
 		}
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
@@ -138,7 +138,6 @@ func walkCollection(
 	database *db.DB,
 	diskID int64,
 	coll *db.Collection,
-	mountPath string,
 	diskLabel string,
 	fileMap map[string]*db.File,
 	seenPaths map[string]struct{},
@@ -159,11 +158,18 @@ func walkCollection(
 			return nil
 		}
 
-		mountRel, relErr := filepath.Rel(mountPath, absPath)
+		// Path is always relative to the collection root so that collections
+		// outside the mount path (manually specified) work correctly.
+		collRel, relErr := filepath.Rel(coll.RootPath, absPath)
 		if relErr != nil {
 			return relErr
 		}
-		relPath := diskLabel + "/" + mountRel
+		var relPath string
+		if collRel == "." {
+			relPath = diskLabel + "/" + coll.Label
+		} else {
+			relPath = diskLabel + "/" + coll.Label + "/" + collRel
+		}
 
 		seenPaths[relPath] = struct{}{}
 
@@ -308,11 +314,3 @@ func ParseCollectionSpec(s string) (CollectionSpec, error) {
 	return CollectionSpec{Label: label, RootPath: path}, nil
 }
 
-// ValidateUnderMount returns an error if the collection path is not under mountPath.
-func (s CollectionSpec) ValidateUnderMount(mountPath string) error {
-	rel, err := filepath.Rel(mountPath, s.RootPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("collection %q: path %q is not under mount path %q", s.Label, s.RootPath, mountPath)
-	}
-	return nil
-}
