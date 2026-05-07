@@ -80,12 +80,27 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 		return nil, fmt.Errorf("walk root: %w", err)
 	}
 
-	// Remove files that no longer exist on disk.
+	// Build the set of collection IDs walked this run so we only delete stale
+	// files within those collections. Files belonging to collections that were
+	// not walked (e.g. previously indexed collections not included in this
+	// --collection run) are left untouched.
+	walkedCollIDs := make(map[int64]struct{}, len(colls))
+	for _, c := range colls {
+		walkedCollIDs[c.ID] = struct{}{}
+	}
+
 	var toDelete []string
-	for path := range fileMap {
-		if _, seen := seenPaths[path]; !seen {
-			toDelete = append(toDelete, path)
+	for path, f := range fileMap {
+		if _, seen := seenPaths[path]; seen {
+			continue
 		}
+		// Preserve files from collections not walked this run.
+		if f.CollectionID != nil {
+			if _, walked := walkedCollIDs[*f.CollectionID]; !walked {
+				continue
+			}
+		}
+		toDelete = append(toDelete, path)
 	}
 	if err := database.DeleteFilesByPath(disk.ID, toDelete); err != nil {
 		return nil, fmt.Errorf("delete stale files: %w", err)
