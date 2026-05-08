@@ -250,7 +250,8 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.input.SetValue("")
-		return m, m.triggerSearch()
+		m.searchSeq++
+		return m, m.execSearch()
 
 	case "enter", "down", "tab":
 		m.inputFocused = false
@@ -315,7 +316,8 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.diskIdx = (m.diskIdx + 1) % len(m.diskNames)
 		m.collIdx = 0
 		m.collNames = m.buildCollNames()
-		return m, m.triggerSearch()
+		m.searchSeq++
+		return m, m.execSearch()
 
 	case "D":
 		m.diskIdx--
@@ -324,12 +326,14 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.collIdx = 0
 		m.collNames = m.buildCollNames()
-		return m, m.triggerSearch()
+		m.searchSeq++
+		return m, m.execSearch()
 
 	case "c":
 		if len(m.collNames) > 1 {
 			m.collIdx = (m.collIdx + 1) % len(m.collNames)
-			return m, m.triggerSearch()
+			m.searchSeq++
+			return m, m.execSearch()
 		}
 		return m, nil
 
@@ -339,13 +343,15 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.collIdx < 0 {
 				m.collIdx = len(m.collNames) - 1
 			}
-			return m, m.triggerSearch()
+			m.searchSeq++
+			return m, m.execSearch()
 		}
 		return m, nil
 
 	case "t":
 		m.typeMode = (m.typeMode + 1) % 3
-		return m, m.triggerSearch()
+		m.searchSeq++
+		return m, m.execSearch()
 
 	case "s":
 		m.sort = (m.sort + 1) % sortModeCount
