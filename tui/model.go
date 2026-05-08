@@ -100,8 +100,9 @@ type Model struct {
 
 	// results
 	results []search.Result
-	cursor  int // selected row (absolute index)
-	offset  int // first visible row
+	cursor  int              // selected row (absolute index)
+	offset  int              // first visible row
+	dupeSet map[string]bool  // keys of potential duplicates (name|size)
 
 	// debounce: each search trigger increments searchSeq; stale results are dropped
 	searchSeq int
@@ -185,6 +186,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.results = msg.results
 		applySortMode(m.results, m.sort)
+		m.dupeSet = buildDupeSet(m.results)
 		m.cursor = 0
 		m.offset = 0
 		return m, nil
@@ -520,8 +522,11 @@ func (m Model) renderResults() string {
 			f.ModifiedAt.Format("2006-01-02"),
 		)
 
+		isDupe := !f.IsDir && m.dupeSet[f.Name+"|"+strconv.FormatInt(f.Size, 10)]
 		if i == m.cursor {
 			b.WriteString(styles.selected.Width(m.width).Render(line))
+		} else if isDupe {
+			b.WriteString(styles.dupe.Render(line))
 		} else {
 			b.WriteString(line)
 		}
@@ -650,6 +655,27 @@ func formatCommas(n int64) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String()
+}
+
+// buildDupeSet returns a set of "name|size" keys for files that appear more
+// than once in results (potential duplicates across any disk or collection).
+// Directories are excluded — same-named dirs are common and not meaningful.
+func buildDupeSet(results []search.Result) map[string]bool {
+	counts := make(map[string]int, len(results))
+	for _, r := range results {
+		if r.File.IsDir {
+			continue
+		}
+		key := r.File.Name + "|" + strconv.FormatInt(r.File.Size, 10)
+		counts[key]++
+	}
+	dupes := make(map[string]bool)
+	for k, n := range counts {
+		if n > 1 {
+			dupes[k] = true
+		}
+	}
+	return dupes
 }
 
 // applySortMode sorts results in-place according to s.

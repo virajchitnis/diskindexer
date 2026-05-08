@@ -15,6 +15,7 @@ type styleSet struct {
 	statusMsg  lipgloss.Style
 	errStyle   lipgloss.Style
 	detailPath lipgloss.Style
+	dupe       lipgloss.Style
 }
 
 var styles = styleSet{
@@ -53,4 +54,7 @@ var styles = styleSet{
 
 	detailPath: lipgloss.NewStyle().Bold(true).
 		Foreground(lipgloss.AdaptiveColor{Light: "#111111", Dark: "#eeeeee"}),
+
+	dupe: lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#b35900", Dark: "#ffb347"}),
 }

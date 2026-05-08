@@ -479,6 +479,46 @@ func TestDetail_EmptyResultsNoPanic(t *testing.T) {
 	assert.NotEmpty(t, output)
 }
 
+// ── Duplicate detection ───────────────────────────────────────────────────────
+
+func TestDupes_SameNameAndSize(t *testing.T) {
+	results := []search.Result{
+		makeResult("photo.jpg", "Disk1", "Coll1", "Disk1/Coll1/photo.jpg", 1024),
+		makeResult("photo.jpg", "Disk2", "Coll2", "Disk2/Coll2/photo.jpg", 1024),
+		makeResult("other.jpg", "Disk1", "Coll1", "Disk1/Coll1/other.jpg", 2048),
+	}
+	dupes := buildDupeSet(results)
+	assert.True(t, dupes["photo.jpg|1024"])
+	assert.False(t, dupes["other.jpg|2048"])
+}
+
+func TestDupes_SameNameDifferentSize(t *testing.T) {
+	results := []search.Result{
+		makeResult("photo.jpg", "Disk1", "Coll1", "Disk1/Coll1/photo.jpg", 1024),
+		makeResult("photo.jpg", "Disk2", "Coll2", "Disk2/Coll2/photo.jpg", 9999),
+	}
+	dupes := buildDupeSet(results)
+	assert.Empty(t, dupes) // different sizes → not duplicates
+}
+
+func TestDupes_DirsExcluded(t *testing.T) {
+	results := []search.Result{
+		{File: &db.File{Name: "Photos", IsDir: true, Size: 0}},
+		{File: &db.File{Name: "Photos", IsDir: true, Size: 0}},
+	}
+	dupes := buildDupeSet(results)
+	assert.Empty(t, dupes)
+}
+
+func TestDupes_PopulatedOnResultsReceived(t *testing.T) {
+	m := newTestModel("", nil)
+	m = injectResults(m, []search.Result{
+		makeResult("a.jpg", "D1", "C1", "D1/C1/a.jpg", 500),
+		makeResult("a.jpg", "D2", "C2", "D2/C2/a.jpg", 500),
+	})
+	assert.True(t, m.dupeSet["a.jpg|500"])
+}
+
 func TestFormatCommas(t *testing.T) {
 	assert.Equal(t, "0", formatCommas(0))
 	assert.Equal(t, "999", formatCommas(999))
