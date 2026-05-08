@@ -510,9 +510,6 @@ func (m Model) renderResults() string {
 		}
 
 		sizeStr := formatSize(f.Size)
-		if f.IsDir {
-			sizeStr = "—"
-		}
 
 		line := fmt.Sprintf("  %-*s  %-*s  %-*s  %8s  %10s",
 			c.name, truncate(name, c.name),
@@ -614,7 +611,6 @@ func (m Model) renderDetail() string {
 	sizeStr := fmt.Sprintf("%s (%s bytes)", formatSize(f.Size), formatCommas(f.Size))
 	typ := "File"
 	if f.IsDir {
-		sizeStr = "—"
 		typ = "Directory"
 	} else if f.Extension != "" {
 		typ = "File (." + f.Extension + ")"
