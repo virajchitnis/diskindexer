@@ -1,6 +1,7 @@
 GO := $(shell test -x ../go/bin/go && echo ../go/bin/go || echo go)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(VERSION)"
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(VERSION) -X github.com/viraj/diskindexer/cmd.buildDate=$(BUILD_DATE)"
 
 BINARY := diskindexer
 BINARY_LINUX := diskindexer-linux-amd64

@@ -21,7 +21,7 @@ make clean          # remove build artifacts
 
 Raw commands (if not using make):
 ```bash
-go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty)" -o diskindexer .
+go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --tags --always --dirty) -X github.com/viraj/diskindexer/cmd.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o diskindexer .
 ```
 
 ## Test
