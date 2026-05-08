@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/viraj/diskindexer/internal/indexer"
 )
@@ -72,20 +74,49 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	database := openDB(dbPath)
 	defer database.Close()
 
-	fmt.Printf("Indexing %q → %s\n", indexDiskLabel, dbPath)
-
-	stats, err := indexer.Run(database, indexer.Options{
+	opts := indexer.Options{
 		DiskLabel:   indexDiskLabel,
 		Description: indexDescription,
 		MountPath:   mountPath,
 		Collections: collSpecs,
 		Force:       indexForce,
-	})
+	}
+
+	fmt.Printf("Indexing %q → %s\n", indexDiskLabel, dbPath)
+
+	// Interactive terminal: run the bubbletea progress display.
+	if term.IsTerminal(os.Stdout.Fd()) {
+		prog := newProgressModel(indexDiskLabel)
+		p := tea.NewProgram(prog)
+
+		opts.ProgressFn = func(u indexer.ProgressUpdate) {
+			p.Send(progressUpdateMsg(u))
+		}
+
+		var (
+			indexStats *indexer.Stats
+			indexErr   error
+		)
+		go func() {
+			indexStats, indexErr = indexer.Run(database, opts)
+			p.Send(progressDoneMsg{stats: indexStats, err: indexErr})
+		}()
+
+		if _, err := p.Run(); err != nil {
+			return err
+		}
+		return indexErr
+	}
+
+	// Non-interactive (piped / scripted): plain text output.
+	if indexForce {
+		fmt.Println("  Force mode: clearing existing index...")
+	}
+	stats, err := indexer.Run(database, opts)
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("\n  Done in %s\n", stats.Elapsed.Round(1e6))
+	fmt.Printf("  Done in %s\n", stats.Elapsed.Round(1e6))
 	fmt.Printf("  Added: %d  Updated: %d  Deleted: %d  Unchanged: %d\n",
 		stats.Added, stats.Updated, stats.Deleted, stats.Skipped)
 	return nil
