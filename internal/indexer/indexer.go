@@ -156,6 +156,16 @@ func resolveCollections(database *db.DB, diskID int64, opts Options) ([]*db.Coll
 
 	if len(opts.Collections) > 0 {
 		specs = opts.Collections
+		// Validate all collection paths up-front before touching the database.
+		for _, spec := range specs {
+			info, err := os.Stat(spec.RootPath)
+			if err != nil {
+				return nil, fmt.Errorf("collection %q: %w", spec.Label, err)
+			}
+			if !info.IsDir() {
+				return nil, fmt.Errorf("collection %q: path %q is not a directory", spec.Label, spec.RootPath)
+			}
+		}
 	} else {
 		entries, err := os.ReadDir(opts.MountPath)
 		if err != nil {

@@ -212,6 +212,40 @@ func TestRun_ManualCollection(t *testing.T) {
 	assert.Equal(t, "My Photos", colls[0].Label)
 }
 
+func TestRun_ManualCollectionPathNotExist(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{})
+
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "Test Disk",
+		MountPath: root,
+		Collections: []indexer.CollectionSpec{
+			{Label: "Ghost", RootPath: "/nonexistent/path/that/does/not/exist"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Ghost")
+}
+
+func TestRun_ManualCollectionPathIsFile(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"myfile.txt": "hello",
+	})
+
+	filePath := filepath.Join(root, "myfile.txt")
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "Test Disk",
+		MountPath: root,
+		Collections: []indexer.CollectionSpec{
+			{Label: "NotADir", RootPath: filePath},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NotADir")
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
 func TestParseCollectionSpec(t *testing.T) {
 	tests := []struct {
 		input   string
