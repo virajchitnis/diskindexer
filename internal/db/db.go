@@ -310,6 +310,26 @@ func (d *DB) DeleteCollection(id int64) (bool, error) {
 	return true, tx.Commit()
 }
 
+// UpdateDirSizes recomputes the size of every directory for a disk by summing
+// the sizes of all non-directory files whose path starts with the directory's
+// path. This is called at the end of every index run so that directory sizes
+// stay current without requiring a schema change.
+func (d *DB) UpdateDirSizes(diskID int64) error {
+	_, err := d.sql.Exec(`
+		UPDATE files
+		SET size = (
+			SELECT COALESCE(SUM(f2.size), 0)
+			FROM files f2
+			WHERE f2.disk_id = files.disk_id
+			  AND f2.is_dir  = 0
+			  AND f2.path LIKE files.path || '/%'
+		)
+		WHERE files.is_dir = 1
+		  AND files.disk_id = ?
+	`, diskID)
+	return err
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // SearchParams defines filters for a file search.

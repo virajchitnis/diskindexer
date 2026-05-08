@@ -107,6 +107,13 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	}
 	stats.Deleted = len(toDelete)
 
+	// Recompute directory sizes: sum all non-dir file sizes whose path falls
+	// under each directory. Done after all upserts/deletes so the numbers are
+	// accurate, even for directories that were not themselves modified.
+	if err := database.UpdateDirSizes(disk.ID); err != nil {
+		return nil, fmt.Errorf("update dir sizes: %w", err)
+	}
+
 	if err := database.UpdateDiskIndexedAt(disk.ID, time.Now()); err != nil {
 		return nil, fmt.Errorf("update disk timestamp: %w", err)
 	}
@@ -194,7 +201,10 @@ func walkCollection(
 		}
 
 		if existing, ok := fileMap[relPath]; ok {
-			if existing.Size == info.Size() && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
+			// For directories, skip the size comparison: their size is managed
+			// by UpdateDirSizes (a computed value), not the OS-reported size.
+			sizeMatch := info.IsDir() || existing.Size == info.Size()
+			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
 				stats.Skipped++
 				return nil
 			}
@@ -276,7 +286,8 @@ func walkRoot(
 		seenPaths[relPath] = struct{}{}
 
 		if existing, ok := fileMap[relPath]; ok {
-			if existing.Size == info.Size() && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
+			sizeMatch := info.IsDir() || existing.Size == info.Size()
+			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
 				stats.Skipped++
 				continue
 			}

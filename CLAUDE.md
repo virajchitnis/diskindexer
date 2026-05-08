@@ -60,6 +60,7 @@ testdata/                # synthetic file trees for integration tests
 - **Collections = top-level folders** on a disk, auto-detected on index. Manual override via `--collection "Label:/absolute/path"`.
 - **Multi-DB search**: each `.diskindex` opened as a separate connection; results merged in Go before display.
 - **FTS5 virtual table** on `(name, path)` with triggers to stay in sync — powers fast text search.
+- **Directory sizes**: computed via a single `UPDATE` at the end of every index run — sums all non-dir file sizes whose path starts with the directory's path. No schema change required; re-indexing existing disks backfills sizes automatically.
 
 ## Index File Location
 
@@ -91,12 +92,24 @@ diskindexer search [query] [--db path]... [--no-tui]
 diskindexer --version
 ```
 
+## TUI Features
+
+- **Live search**: 150ms debounce on every keystroke; no explicit submit needed.
+- **Sorting**: `s` cycles NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼ using `sort.SliceStable`.
+- **Type filter**: `t` cycles All → Files → Dirs.
+- **Disk filter**: `d`/`D` cycles forward/backward through indexed disks.
+- **Detail panel**: `i` toggles a 3-line panel below the selected row showing full path, size (with commas), modified date, type, disk, and collection.
+- **Duplicate highlighting**: files sharing the same `name|size` across all results are rendered in amber. Directories are excluded from dupe detection.
+- **No result limit**: TUI always fetches all matching results (`Limit: 0`).
+- **Clipboard**: `Enter` copies the full path to the system clipboard.
+
 ## Development Conventions
 
 - **Keep README.md in sync**: any change that affects user-facing behaviour (new commands, changed flags, TUI controls, etc.) must also update `README.md` in the same PR/commit.
 - **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
 - **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
 - **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
+- **Install target**: `make install` cross-compiles for Linux AMD64 and deploys to `~/.local/bin/diskindexer` on `enterprise.virajchitnis.com` via `scp`.
 
 ## Libraries
 
