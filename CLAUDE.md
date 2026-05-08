@@ -98,10 +98,26 @@ diskindexer --version
 - **Sorting**: `s` cycles NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼ using `sort.SliceStable`.
 - **Type filter**: `t` cycles All → Files → Dirs.
 - **Disk filter**: `d`/`D` cycles forward/backward through indexed disks.
+- **Collection filter**: `c`/`C` cycles forward/backward through collections. Coupled to the disk filter: selecting a disk narrows the collection list to only that disk's collections, and changing the disk resets the collection to "(all)". When disk is "(all)", all unique collection names across all disks are shown.
 - **Detail panel**: `i` toggles a 3-line panel below the selected row showing full path, size (with commas), modified date, type, disk, and collection.
 - **Duplicate highlighting**: files sharing the same `name|size` across all results are rendered in amber. Directories are excluded from dupe detection.
 - **No result limit**: TUI always fetches all matching results (`Limit: 0`).
 - **Clipboard**: `Enter` copies the full path to the system clipboard.
+
+## Potential Future Features
+
+### Browse directory contents
+When a directory is selected in the TUI, allow the user to "enter" it and view its descendants — turning the tool into a navigable file browser in addition to a search tool.
+
+**Design notes:**
+- A new key (`→` or `l`) enters a directory; `←` or `h` navigates back up a level.
+- A browse stack (`[]string`) is maintained in the model. The tip of the stack becomes a path-prefix filter on every search (`AND f.path LIKE ? || '/%'`).
+- A breadcrumb row shows the current location below the search bar.
+- The existing search bar continues to work within the directory context.
+- `Enter` on a file still copies to clipboard; the new key is solely for navigation.
+- Needs a new `PathPrefix string` field in `db.SearchParams` and a corresponding SQL filter.
+- The simplest implementation shows all descendants (not just immediate children), which avoids the need for SQL path-depth logic.
+- Immediate-children-only mode would require stripping trailing path components, which SQLite cannot do natively and would need application-level post-filtering.
 
 ## Development Conventions
 

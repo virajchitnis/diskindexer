@@ -12,7 +12,7 @@ import (
 
 // newTestModel creates a model with a fixed window size and no real DBs.
 func newTestModel(query string, disks []string) Model {
-	m := New(nil, query, disks, "")
+	m := New(nil, query, disks, "", nil)
 	m.width = 120
 	m.height = 30
 	return m
@@ -78,14 +78,14 @@ func TestNew_InitialQuery(t *testing.T) {
 }
 
 func TestNew_InitialDisk(t *testing.T) {
-	m := New(nil, "", []string{"WD Red", "Seagate"}, "Seagate")
+	m := New(nil, "", []string{"WD Red", "Seagate"}, "Seagate", nil)
 	m.width = 120
 	m.height = 30
 	assert.Equal(t, 2, m.diskIdx)
 }
 
 func TestNew_InitialDiskNotFound(t *testing.T) {
-	m := New(nil, "", []string{"WD Red"}, "Unknown")
+	m := New(nil, "", []string{"WD Red"}, "Unknown", nil)
 	assert.Equal(t, 0, m.diskIdx) // falls back to "(all)"
 }
 
@@ -126,6 +126,102 @@ func TestDiskFilter_CyclesBackward(t *testing.T) {
 
 	m = sendKey(m, "D")
 	assert.Equal(t, 2, m.diskIdx) // wraps to last
+}
+
+func TestCollFilter_NilCollsByDiskNoOp(t *testing.T) {
+	// When no collections are provided, c/C should be a no-op.
+	m := newTestModel("", []string{"WD Red"})
+	m.inputFocused = false
+
+	m = sendKey(m, "c")
+	assert.Equal(t, 0, m.collIdx)
+}
+
+func TestCollFilter_CyclesForward(t *testing.T) {
+	collsByDisk := map[string][]string{
+		"WD Red": {"Photos", "Videos"},
+	}
+	m := New(nil, "", []string{"WD Red"}, "", collsByDisk)
+	m.width = 120
+	m.height = 30
+	m.inputFocused = false
+
+	// Select disk first so we get that disk's collections
+	m = sendKey(m, "d") // disk → WD Red
+	assert.Equal(t, []string{"(all)", "Photos", "Videos"}, m.collNames)
+
+	m = sendKey(m, "c")
+	assert.Equal(t, 1, m.collIdx)
+	assert.Equal(t, "Photos", m.collNames[m.collIdx])
+
+	m = sendKey(m, "c")
+	assert.Equal(t, 2, m.collIdx)
+	assert.Equal(t, "Videos", m.collNames[m.collIdx])
+
+	m = sendKey(m, "c") // wraps back to "(all)"
+	assert.Equal(t, 0, m.collIdx)
+}
+
+func TestCollFilter_CyclesBackward(t *testing.T) {
+	collsByDisk := map[string][]string{
+		"WD Red": {"Photos", "Videos"},
+	}
+	m := New(nil, "", []string{"WD Red"}, "", collsByDisk)
+	m.width = 120
+	m.height = 30
+	m.inputFocused = false
+	m = sendKey(m, "d") // select WD Red
+
+	m = sendKey(m, "C") // wraps to last
+	assert.Equal(t, 2, m.collIdx)
+	assert.Equal(t, "Videos", m.collNames[m.collIdx])
+}
+
+func TestCollFilter_ResetsWhenDiskChanges(t *testing.T) {
+	collsByDisk := map[string][]string{
+		"WD Red":  {"Photos", "Videos"},
+		"Seagate": {"Archive"},
+	}
+	m := New(nil, "", []string{"WD Red", "Seagate"}, "", collsByDisk)
+	m.width = 120
+	m.height = 30
+	m.inputFocused = false
+
+	m = sendKey(m, "d") // disk → WD Red
+	m = sendKey(m, "c") // coll → Photos
+	assert.Equal(t, "Photos", m.collNames[m.collIdx])
+
+	m = sendKey(m, "d") // disk → Seagate → collection must reset
+	assert.Equal(t, 0, m.collIdx)
+	assert.Equal(t, []string{"(all)", "Archive"}, m.collNames)
+}
+
+func TestCollFilter_AllDisksShowsMergedCollections(t *testing.T) {
+	collsByDisk := map[string][]string{
+		"WD Red":  {"Photos", "Videos"},
+		"Seagate": {"Archive", "Photos"}, // "Photos" appears in both
+	}
+	m := New(nil, "", []string{"WD Red", "Seagate"}, "", collsByDisk)
+	m.width = 120
+	m.height = 30
+
+	// When disk is "(all)", collection list = deduplicated union, sorted
+	assert.Equal(t, []string{"(all)", "Archive", "Photos", "Videos"}, m.collNames)
+}
+
+func TestCollFilter_ParamIncludesCollLabel(t *testing.T) {
+	collsByDisk := map[string][]string{
+		"WD Red": {"Photos"},
+	}
+	m := New(nil, "", []string{"WD Red"}, "", collsByDisk)
+	m.width = 120
+	m.height = 30
+	m.inputFocused = false
+	m = sendKey(m, "d") // select WD Red
+	m = sendKey(m, "c") // select Photos
+
+	p := m.BuildParams()
+	assert.Equal(t, "Photos", p.CollLabel)
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -420,7 +516,7 @@ func TestView_EmptyResults(t *testing.T) {
 }
 
 func TestView_ZeroDimensions(t *testing.T) {
-	m := New(nil, "", nil, "")
+	m := New(nil, "", nil, "", nil)
 	// Before WindowSizeMsg is received, View should not panic.
 	output := m.View()
 	assert.Contains(t, output, "Loading")

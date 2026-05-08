@@ -93,10 +93,13 @@ type Model struct {
 	input textinput.Model
 
 	// filter state
-	diskNames []string // index 0 is always "(all)"
-	diskIdx   int
-	typeMode  typeMode
-	sort      sortMode
+	diskNames   []string            // index 0 is always "(all)"
+	diskIdx     int
+	collsByDisk map[string][]string // disk label → sorted collection names
+	collNames   []string            // current selectable list, index 0 is "(all)"
+	collIdx     int
+	typeMode    typeMode
+	sort        sortMode
 
 	// results
 	results []search.Result
@@ -127,7 +130,8 @@ type Model struct {
 // diskNames should not include the "(all)" entry — it is prepended automatically.
 // initialQuery pre-fills the search bar.
 // initialDisk pre-selects a disk filter (empty = all).
-func New(dbs []*db.DB, initialQuery string, diskNames []string, initialDisk string) Model {
+// collsByDisk maps disk label → sorted collection names (nil = no collection filter).
+func New(dbs []*db.DB, initialQuery string, diskNames []string, initialDisk string, collsByDisk map[string][]string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "search files and folders..."
 	ti.SetValue(initialQuery)
@@ -147,13 +151,44 @@ func New(dbs []*db.DB, initialQuery string, diskNames []string, initialDisk stri
 		}
 	}
 
-	return Model{
+	m := Model{
 		dbs:          dbs,
 		input:        ti,
 		diskNames:    allNames,
 		diskIdx:      diskIdx,
+		collsByDisk:  collsByDisk,
 		inputFocused: true,
 	}
+	m.collNames = m.buildCollNames()
+	return m
+}
+
+// buildCollNames returns the selectable collection list for the current disk
+// selection: "(all)" + all unique names across all disks when no disk is
+// selected, or "(all)" + that disk's collections when a disk is selected.
+func (m Model) buildCollNames() []string {
+	result := []string{"(all)"}
+	if len(m.collsByDisk) == 0 {
+		return result
+	}
+	if m.diskIdx == 0 {
+		// All disks: merge and deduplicate collection names.
+		seen := make(map[string]struct{})
+		var names []string
+		for _, colls := range m.collsByDisk {
+			for _, c := range colls {
+				if _, ok := seen[c]; !ok {
+					seen[c] = struct{}{}
+					names = append(names, c)
+				}
+			}
+		}
+		sort.Strings(names)
+		return append(result, names...)
+	}
+	// Specific disk selected.
+	diskName := m.diskNames[m.diskIdx]
+	return append(result, m.collsByDisk[diskName]...)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -278,6 +313,8 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "d":
 		m.diskIdx = (m.diskIdx + 1) % len(m.diskNames)
+		m.collIdx = 0
+		m.collNames = m.buildCollNames()
 		return m, m.triggerSearch()
 
 	case "D":
@@ -285,7 +322,26 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.diskIdx < 0 {
 			m.diskIdx = len(m.diskNames) - 1
 		}
+		m.collIdx = 0
+		m.collNames = m.buildCollNames()
 		return m, m.triggerSearch()
+
+	case "c":
+		if len(m.collNames) > 1 {
+			m.collIdx = (m.collIdx + 1) % len(m.collNames)
+			return m, m.triggerSearch()
+		}
+		return m, nil
+
+	case "C":
+		if len(m.collNames) > 1 {
+			m.collIdx--
+			if m.collIdx < 0 {
+				m.collIdx = len(m.collNames) - 1
+			}
+			return m, m.triggerSearch()
+		}
+		return m, nil
 
 	case "t":
 		m.typeMode = (m.typeMode + 1) % 3
@@ -355,6 +411,9 @@ func (m Model) buildParams() db.SearchParams {
 	}
 	if m.diskIdx > 0 && m.diskIdx < len(m.diskNames) {
 		p.DiskLabel = m.diskNames[m.diskIdx]
+	}
+	if m.collIdx > 0 && m.collIdx < len(m.collNames) {
+		p.CollLabel = m.collNames[m.collIdx]
 	}
 	switch m.typeMode {
 	case typeModeFiles:
@@ -450,6 +509,14 @@ func (m Model) renderFilters() string {
 		styles.label.Render(" Disk: ") +
 		styles.filterVal.Render(m.diskNames[m.diskIdx])
 
+	collVal := "(all)"
+	if m.collIdx > 0 && m.collIdx < len(m.collNames) {
+		collVal = m.collNames[m.collIdx]
+	}
+	coll := styles.filterKey.Render("c") +
+		styles.label.Render(" Coll: ") +
+		styles.filterVal.Render(collVal)
+
 	typ := styles.filterKey.Render("t") +
 		styles.label.Render(" Type: ") +
 		styles.filterVal.Render(m.typeMode.label())
@@ -459,7 +526,7 @@ func (m Model) renderFilters() string {
 		styles.filterVal.Render(m.sort.label())
 
 	sep := styles.dim.Render("   ")
-	return "  " + disk + sep + typ + sep + srt
+	return "  " + disk + sep + coll + sep + typ + sep + srt
 }
 
 func (m Model) renderHeaders() string {
@@ -559,6 +626,7 @@ func (m Model) renderStatus() string {
 		styles.dim.Render("[enter]") + " copy path" + sep +
 		styles.dim.Render("[/]") + " search" + sep +
 		styles.dim.Render("[d]") + " disk" + sep +
+		styles.dim.Render("[c]") + " collection" + sep +
 		styles.dim.Render("[t]") + " type" + sep +
 		styles.dim.Render("[s]") + " sort" + sep +
 		styles.dim.Render("[i]") + " detail" + sep +

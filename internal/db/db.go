@@ -334,18 +334,19 @@ func (d *DB) UpdateDirSizes(diskID int64) error {
 
 // SearchParams defines filters for a file search.
 type SearchParams struct {
-	Query     string
-	DiskLabel string // filter by disk label; resolved to DiskID per-DB
-	DiskID    int64  // 0 = all disks (set automatically from DiskLabel)
-	CollID    int64  // 0 = all collections
-	Extension string // "" = all extensions
-	IsDir     *bool  // nil = both, true = dirs only, false = files only
-	MinSize   int64  // 0 = no minimum
-	MaxSize   int64  // 0 = no maximum
-	ModAfter  time.Time
-	ModBefore time.Time
-	Limit     int // 0 = no limit; text mode defaults to 50 via flag
-	Offset    int
+	Query      string
+	DiskLabel  string // filter by disk label; resolved to DiskID per-DB
+	DiskID     int64  // 0 = all disks (set automatically from DiskLabel)
+	CollID     int64  // 0 = all collections
+	CollLabel  string // filter by collection label ("" = all collections)
+	Extension  string // "" = all extensions
+	IsDir      *bool  // nil = both, true = dirs only, false = files only
+	MinSize    int64  // 0 = no minimum
+	MaxSize    int64  // 0 = no maximum
+	ModAfter   time.Time
+	ModBefore  time.Time
+	Limit      int // 0 = no limit; text mode defaults to 50 via flag
+	Offset     int
 }
 
 // Search executes a search against this database and returns matching files.
@@ -421,6 +422,10 @@ func appendFilters(where string, args []interface{}, p SearchParams) (string, []
 	if p.CollID != 0 {
 		where += " AND f.collection_id = ?"
 		args = append(args, p.CollID)
+	}
+	if p.CollLabel != "" {
+		where += " AND c.label = ?"
+		args = append(args, p.CollLabel)
 	}
 	if p.Extension != "" {
 		where += " AND f.extension = ?"

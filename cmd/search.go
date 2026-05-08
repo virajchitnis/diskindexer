@@ -85,8 +85,9 @@ func runSearch(_ *cobra.Command, args []string) error {
 
 func runTUI(dbs []*db.DB, initialQuery string) error {
 	diskNames := collectDiskNames(dbs)
+	collsByDisk := collectCollectionsByDisk(dbs)
 
-	model := tui.New(dbs, initialQuery, diskNames, searchDiskLabel)
+	model := tui.New(dbs, initialQuery, diskNames, searchDiskLabel, collsByDisk)
 
 	p := tea.NewProgram(
 		model,
@@ -118,6 +119,35 @@ func collectDiskNames(dbs []*db.DB) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// collectCollectionsByDisk returns a map of disk label → sorted, deduplicated
+// collection names for that disk, gathered across all open databases.
+func collectCollectionsByDisk(dbs []*db.DB) map[string][]string {
+	// disk label → set of collection labels
+	sets := make(map[string]map[string]struct{})
+	for _, d := range dbs {
+		colls, err := d.ListCollections(0) // 0 = all disks
+		if err != nil {
+			continue
+		}
+		for _, c := range colls {
+			if sets[c.DiskLabel] == nil {
+				sets[c.DiskLabel] = make(map[string]struct{})
+			}
+			sets[c.DiskLabel][c.Label] = struct{}{}
+		}
+	}
+	result := make(map[string][]string, len(sets))
+	for disk, nameSet := range sets {
+		names := make([]string, 0, len(nameSet))
+		for n := range nameSet {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		result[disk] = names
+	}
+	return result
 }
 
 // ── Text mode ─────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Incremental indexing** — only processes changed, new, or deleted files on subsequent runs
 - **Directory sizes** — computed automatically at the end of every index run; no re-scan needed
 - **Collections** — top-level directories are auto-detected as collections; manual override supported
-- **Interactive TUI** — live search with filters, sorting, detail panel, and one-key clipboard copy
+- **Interactive TUI** — live search with disk, collection, and type filters, sorting, detail panel, and one-key clipboard copy
 - **Duplicate highlighting** — files sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
@@ -222,6 +222,7 @@ diskindexer delete-collection 3
 | `Tab` | Move focus to results |
 | `/` or `Esc` | Move focus back to search bar |
 | `d` / `D` | Cycle disk filter forward / backward |
+| `c` / `C` | Cycle collection filter forward / backward (list narrows when a disk is selected) |
 | `t` | Cycle type filter (All → Files → Dirs) |
 | `s` | Cycle sort (NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼) |
 | `i` | Toggle detail panel (full path, size, date, disk, collection) |
