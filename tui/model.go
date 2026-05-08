@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,9 @@ type Model struct {
 
 	// whether search input is focused
 	inputFocused bool
+
+	// whether the detail panel is visible
+	showDetail bool
 
 	err error
 }
@@ -292,6 +296,11 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.offset = 0
 		return m, nil
 
+	case "i":
+		m.showDetail = !m.showDetail
+		m.clampViewport()
+		return m, nil
+
 	case "enter":
 		if len(m.results) == 0 || m.cursor >= len(m.results) {
 			return m, nil
@@ -374,7 +383,12 @@ func (m *Model) clampViewport() {
 // visibleRows returns how many result rows fit in the current terminal.
 func (m Model) visibleRows() int {
 	// overhead: title(1) + search(1) + filters(1) + divider(1) + header(1) + divider(1) + status(2) = 8
-	v := m.height - 8
+	// detail panel adds 3 more lines when open
+	overhead := 8
+	if m.showDetail {
+		overhead += 3
+	}
+	v := m.height - overhead
 	if v < 1 {
 		return 1
 	}
@@ -417,6 +431,11 @@ func (m Model) View() string {
 	// Divider
 	b.WriteString(styles.divider.Render(strings.Repeat("─", m.width)))
 	b.WriteByte('\n')
+
+	// Detail panel
+	if m.showDetail {
+		b.WriteString(m.renderDetail())
+	}
 
 	// Status
 	b.WriteString(m.renderStatus())
@@ -540,6 +559,7 @@ func (m Model) renderStatus() string {
 		styles.dim.Render("[d]") + " disk" + sep +
 		styles.dim.Render("[t]") + " type" + sep +
 		styles.dim.Render("[s]") + " sort" + sep +
+		styles.dim.Render("[i]") + " detail" + sep +
 		styles.dim.Render("[q]") + " quit"
 
 	return line1 + "\n" + hints + "\n"
@@ -574,6 +594,63 @@ func (m Model) colWidths() colWidths {
 }
 
 // ── String helpers ────────────────────────────────────────────────────────────
+
+// renderDetail renders the 3-line detail panel for the currently selected entry.
+func (m Model) renderDetail() string {
+	if len(m.results) == 0 || m.cursor >= len(m.results) {
+		return "\n\n\n"
+	}
+	f := m.results[m.cursor].File
+
+	// Line 1: full path
+	line1 := "  " + styles.detailPath.Render(f.Path)
+
+	// Line 2: size, modified, type
+	sizeStr := fmt.Sprintf("%s (%s bytes)", formatSize(f.Size), formatCommas(f.Size))
+	typ := "File"
+	if f.IsDir {
+		sizeStr = "—"
+		typ = "Directory"
+	} else if f.Extension != "" {
+		typ = "File (." + f.Extension + ")"
+	}
+	line2 := "  " +
+		styles.label.Render("Size: ") + sizeStr +
+		styles.dim.Render("   ") +
+		styles.label.Render("Modified: ") + f.ModifiedAt.Local().Format("2006-01-02 15:04:05") +
+		styles.dim.Render("   ") +
+		styles.label.Render("Type: ") + typ
+
+	// Line 3: disk and collection
+	coll := f.CollLabel
+	if coll == "" {
+		coll = styles.dim.Render("—")
+	}
+	line3 := "  " +
+		styles.label.Render("Disk: ") + f.DiskLabel +
+		styles.dim.Render("   ") +
+		styles.label.Render("Collection: ") + coll
+
+	return line1 + "\n" + line2 + "\n" + line3 + "\n"
+}
+
+// formatCommas formats an integer with thousands separators.
+func formatCommas(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	rem := len(s) % 3
+	b.WriteString(s[:rem])
+	for i := rem; i < len(s); i += 3 {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
 
 // applySortMode sorts results in-place according to s.
 func applySortMode(results []search.Result, s sortMode) {

@@ -3,17 +3,18 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 type styleSet struct {
-	title     lipgloss.Style
-	label     lipgloss.Style
-	filterKey lipgloss.Style
-	filterVal lipgloss.Style
-	colHeader lipgloss.Style
-	selected  lipgloss.Style
-	dim       lipgloss.Style
-	divider   lipgloss.Style
-	count     lipgloss.Style
-	statusMsg lipgloss.Style
-	errStyle  lipgloss.Style
+	title      lipgloss.Style
+	label      lipgloss.Style
+	filterKey  lipgloss.Style
+	filterVal  lipgloss.Style
+	colHeader  lipgloss.Style
+	selected   lipgloss.Style
+	dim        lipgloss.Style
+	divider    lipgloss.Style
+	count      lipgloss.Style
+	statusMsg  lipgloss.Style
+	errStyle   lipgloss.Style
+	detailPath lipgloss.Style
 }
 
 var styles = styleSet{
@@ -49,4 +50,7 @@ var styles = styleSet{
 
 	errStyle: lipgloss.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#cc0000", Dark: "#ff6666"}),
+
+	detailPath: lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.AdaptiveColor{Light: "#111111", Dark: "#eeeeee"}),
 }

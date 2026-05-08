@@ -425,3 +425,65 @@ func TestView_ZeroDimensions(t *testing.T) {
 	output := m.View()
 	assert.Contains(t, output, "Loading")
 }
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+
+func TestDetail_HiddenByDefault(t *testing.T) {
+	m := newTestModel("", nil)
+	assert.False(t, m.showDetail)
+}
+
+func TestDetail_TogglesWithIKey(t *testing.T) {
+	m := newTestModel("", nil)
+	m.inputFocused = false
+
+	m = sendKey(m, "i")
+	assert.True(t, m.showDetail)
+
+	m = sendKey(m, "i")
+	assert.False(t, m.showDetail)
+}
+
+func TestDetail_ReducesVisibleRows(t *testing.T) {
+	m := newTestModel("", nil)
+	m.height = 20
+	open := m.visibleRows()
+
+	m.showDetail = true
+	closed := m.visibleRows()
+
+	assert.Equal(t, 3, open-closed)
+}
+
+func TestDetail_ShowsPathAndFields(t *testing.T) {
+	m := newTestModel("", nil)
+	m.inputFocused = false
+	m.showDetail = true
+	m = injectResults(m, []search.Result{
+		makeResult("beach.jpg", "WD Red", "Vacation", "WD Red/Vacation/beach.jpg", 4*1024*1024),
+	})
+
+	output := m.renderDetail()
+	assert.Contains(t, output, "WD Red/Vacation/beach.jpg")
+	assert.Contains(t, output, "4.0M")
+	assert.Contains(t, output, "WD Red")
+	assert.Contains(t, output, "Vacation")
+	assert.Contains(t, output, ".jpg")
+}
+
+func TestDetail_EmptyResultsNoPanic(t *testing.T) {
+	m := newTestModel("", nil)
+	m.showDetail = true
+	// Should not panic with no results.
+	output := m.renderDetail()
+	assert.NotEmpty(t, output)
+}
+
+func TestFormatCommas(t *testing.T) {
+	assert.Equal(t, "0", formatCommas(0))
+	assert.Equal(t, "999", formatCommas(999))
+	assert.Equal(t, "1,000", formatCommas(1000))
+	assert.Equal(t, "1,024", formatCommas(1024))
+	assert.Equal(t, "1,048,576", formatCommas(1024*1024))
+	assert.Equal(t, "4,404,019", formatCommas(4404019))
+}
