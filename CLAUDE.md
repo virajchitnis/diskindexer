@@ -86,8 +86,8 @@ diskindexer reindex <mount-path> --disk "Label" [--db path]
 diskindexer disks [--db path]
 diskindexer delete-disk --disk "Label" [--db path]
 diskindexer collections [--disk "Label"] [--db path]
-diskindexer rename-collection <id> <new-label> [--db path]
-diskindexer delete-collection <id> [--db path]
+diskindexer rename-collection <new-label> --collection "Label" [--disk "Label"] [--db path]
+diskindexer delete-collection --collection "Label" [--disk "Label"] [--db path]
 diskindexer search [query] [--db path]... [--no-tui]
 diskindexer --version
 ```

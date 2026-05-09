@@ -165,6 +165,44 @@ func (d *DB) ListCollections(diskID int64) ([]*Collection, error) {
 	return colls, rows.Err()
 }
 
+// GetCollectionsByLabel returns all collections whose label matches collLabel.
+// If diskLabel is non-empty the results are further filtered to that disk.
+// Returns an empty slice (not an error) when nothing matches.
+func (d *DB) GetCollectionsByLabel(collLabel, diskLabel string) ([]*Collection, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if diskLabel != "" {
+		rows, err = d.sql.Query(`
+			SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+			FROM collections c JOIN disks d ON c.disk_id = d.id
+			WHERE c.label = ? AND d.label = ?
+			ORDER BY d.label, c.label
+		`, collLabel, diskLabel)
+	} else {
+		rows, err = d.sql.Query(`
+			SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+			FROM collections c JOIN disks d ON c.disk_id = d.id
+			WHERE c.label = ?
+			ORDER BY d.label, c.label
+		`, collLabel)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var colls []*Collection
+	for rows.Next() {
+		c, err := scanCollection(rows)
+		if err != nil {
+			return nil, err
+		}
+		colls = append(colls, c)
+	}
+	return colls, rows.Err()
+}
+
 func (d *DB) RenameCollection(id int64, newLabel string) error {
 	res, err := d.sql.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id)
 	if err != nil {

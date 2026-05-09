@@ -197,10 +197,11 @@ diskindexer collections --disk "Seagate 4TB"
 
 ### `rename-collection`
 
-Rename a collection by its numeric ID (shown in `collections` output).
+Rename a collection by its label. Use `--disk` to disambiguate if the same collection name exists on more than one disk.
 
 ```bash
-diskindexer rename-collection 3 "Holiday Photos"
+diskindexer rename-collection "Holiday Photos" --collection "Photos"
+diskindexer rename-collection "Holiday Photos" --collection "Photos" --disk "Seagate 4TB"
 ```
 
 ### `delete-collection`
@@ -208,7 +209,8 @@ diskindexer rename-collection 3 "Holiday Photos"
 Remove a collection and all its files from the index. The actual files on disk are not affected.
 
 ```bash
-diskindexer delete-collection 3
+diskindexer delete-collection --collection "Photos"
+diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 ```
 
 ## TUI Controls
