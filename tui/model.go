@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/viraj/diskindexer/internal/db"
 	"github.com/viraj/diskindexer/internal/search"
 )
@@ -110,6 +112,10 @@ type Model struct {
 	// debounce: each search trigger increments searchSeq; stale results are dropped
 	searchSeq int
 
+	// search-in-progress indicator
+	spinner   spinner.Model
+	searching bool
+
 	// window dimensions
 	width  int
 	height int
@@ -151,6 +157,10 @@ func New(dbs []*db.DB, initialQuery string, diskNames []string, initialDisk stri
 		}
 	}
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0066cc", Dark: "#7dcfff"})
+
 	m := Model{
 		dbs:          dbs,
 		input:        ti,
@@ -158,6 +168,7 @@ func New(dbs []*db.DB, initialQuery string, diskNames []string, initialDisk stri
 		diskIdx:      diskIdx,
 		collsByDisk:  collsByDisk,
 		inputFocused: true,
+		spinner:      sp,
 	}
 	m.collNames = m.buildCollNames()
 	return m
@@ -208,16 +219,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampViewport()
 		return m, nil
 
+	case spinner.TickMsg:
+		if m.searching {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case debounceTick:
 		if msg.seq != m.searchSeq {
 			return m, nil // superseded by a newer keystroke
 		}
-		return m, m.execSearch()
+		return m, m.startSearch()
 
 	case searchDoneMsg:
 		if msg.seq != m.searchSeq {
 			return m, nil // stale result
 		}
+		m.searching = false
 		m.err = msg.err
 		m.results = msg.results
 		applySortMode(m.results, m.sort)
@@ -251,7 +271,7 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		m.searchSeq++
-		return m, m.execSearch()
+		return m, m.startSearch()
 
 	case "enter", "down", "tab":
 		m.inputFocused = false
@@ -317,7 +337,7 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.collIdx = 0
 		m.collNames = m.buildCollNames()
 		m.searchSeq++
-		return m, m.execSearch()
+		return m, m.startSearch()
 
 	case "D":
 		m.diskIdx--
@@ -327,13 +347,13 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.collIdx = 0
 		m.collNames = m.buildCollNames()
 		m.searchSeq++
-		return m, m.execSearch()
+		return m, m.startSearch()
 
 	case "c":
 		if len(m.collNames) > 1 {
 			m.collIdx = (m.collIdx + 1) % len(m.collNames)
 			m.searchSeq++
-			return m, m.execSearch()
+			return m, m.startSearch()
 		}
 		return m, nil
 
@@ -344,14 +364,14 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.collIdx = len(m.collNames) - 1
 			}
 			m.searchSeq++
-			return m, m.execSearch()
+			return m, m.startSearch()
 		}
 		return m, nil
 
 	case "t":
 		m.typeMode = (m.typeMode + 1) % 3
 		m.searchSeq++
-		return m, m.execSearch()
+		return m, m.startSearch()
 
 	case "s":
 		m.sort = (m.sort + 1) % sortModeCount
@@ -392,6 +412,13 @@ func (m Model) triggerSearch() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
 		return debounceTick{seq}
 	})
+}
+
+// startSearch marks a search as in-progress, starts the spinner, and fires
+// the search goroutine. Use this instead of execSearch at all call sites.
+func (m Model) startSearch() tea.Cmd {
+	m.searching = true
+	return tea.Batch(m.execSearch(), m.spinner.Tick)
 }
 
 // execSearch runs the search synchronously inside a tea.Cmd (goroutine).
@@ -475,9 +502,12 @@ func (m Model) View() string {
 	b.WriteString(styles.title.Render(" Disk Indexer"))
 	b.WriteByte('\n')
 
-	// Search bar
+	// Search bar (with in-progress spinner when a query is running)
 	b.WriteString(styles.label.Render(" Search: "))
 	b.WriteString(m.input.View())
+	if m.searching {
+		b.WriteString("  " + m.spinner.View())
+	}
 	b.WriteByte('\n')
 
 	// Filters
