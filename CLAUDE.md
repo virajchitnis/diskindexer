@@ -12,12 +12,17 @@ The Makefile auto-detects the Go binary: uses `../go/bin/go` if present
 (local toolchain), otherwise falls back to `go` on PATH.
 
 ```bash
-make build          # build for current platform
-make build-linux    # cross-compile for Linux AMD64
-make install        # build-linux + scp to enterprise.virajchitnis.com
-make test           # run all tests
-make clean          # remove build artifacts
+make build               # build for current platform
+make build-linux         # cross-compile for Linux AMD64
+make build-darwin-arm64  # cross-compile for macOS Apple Silicon
+make build-darwin-amd64  # cross-compile for macOS Intel
+make install             # build-linux + scp to enterprise.virajchitnis.com
+make release             # build all three platform binaries + gh release create
+make test                # run all tests
+make clean               # remove build artifacts
 ```
+
+The Makefile auto-detects the `gh` CLI at `../gh/bin/gh` (falling back to `gh` on PATH), mirroring the Go binary detection pattern.
 
 Raw commands (if not using make):
 ```bash
@@ -60,7 +65,7 @@ testdata/                # synthetic file trees for integration tests
 - **Collections = top-level folders** on a disk, auto-detected on index. Manual override via `--collection "Label:/absolute/path"`.
 - **Multi-DB search**: each `.diskindex` opened as a separate connection; results merged in Go before display.
 - **FTS5 virtual table** on `(name, path)` with triggers to stay in sync — powers fast text search.
-- **Directory sizes**: computed via a single `UPDATE` at the end of every index run — sums all non-dir file sizes whose path starts with the directory's path. No schema change required; re-indexing existing disks backfills sizes automatically.
+- **Directory sizes**: computed in Go at the end of every index run (`ComputeAndUpdateDirSizes`). All file rows are fetched in one query; sizes are accumulated in memory by walking each file's ancestor paths (O(N × depth)); collections are processed in parallel goroutines (disjoint subtrees); results are written back in sequential batched UPDATEs (200/tx) with progress callbacks. Replaces the previous O(N²) correlated SQL subquery.
 
 ## Index File Location
 

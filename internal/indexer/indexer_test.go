@@ -246,6 +246,47 @@ func TestRun_ManualCollectionPathIsFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a directory")
 }
 
+func TestRun_ProgressUpdateCarriesTotal(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/img001.jpg": "x",
+		"Photos/img002.jpg": "y",
+	})
+
+	// First run seeds the file map.
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "Test Disk", MountPath: root})
+	require.NoError(t, err)
+
+	// Second run: fileMap will be populated, so Total > 0 in indexing updates.
+	var updates []indexer.ProgressUpdate
+	_, err = indexer.Run(d, indexer.Options{
+		DiskLabel:  "Test Disk",
+		MountPath:  root,
+		ProgressFn: func(u indexer.ProgressUpdate) { updates = append(updates, u) },
+	})
+	require.NoError(t, err)
+
+	// At least one indexing-phase update should carry a non-zero Total.
+	var foundIndexing bool
+	for _, u := range updates {
+		if u.Phase == "indexing" && u.Total > 0 {
+			foundIndexing = true
+			break
+		}
+	}
+	assert.True(t, foundIndexing, "expected an indexing update with Total > 0")
+
+	// Sizes phase should carry DirsTotal > 0 (Photos/ is one directory).
+	var foundSizes bool
+	for _, u := range updates {
+		if u.Phase == "sizes" && u.DirsTotal > 0 {
+			foundSizes = true
+			break
+		}
+	}
+	assert.True(t, foundSizes, "expected a sizes update with DirsTotal > 0")
+}
+
 func TestParseCollectionSpec(t *testing.T) {
 	tests := []struct {
 		input   string

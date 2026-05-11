@@ -4,7 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -348,24 +351,197 @@ func (d *DB) DeleteCollection(id int64) (bool, error) {
 	return true, tx.Commit()
 }
 
-// UpdateDirSizes recomputes the size of every directory for a disk by summing
-// the sizes of all non-directory files whose path starts with the directory's
-// path. This is called at the end of every index run so that directory sizes
-// stay current without requiring a schema change.
-func (d *DB) UpdateDirSizes(diskID int64) error {
-	_, err := d.sql.Exec(`
-		UPDATE files
-		SET size = (
-			SELECT COALESCE(SUM(f2.size), 0)
-			FROM files f2
-			WHERE f2.disk_id = files.disk_id
-			  AND f2.is_dir  = 0
-			  AND f2.path LIKE files.path || '/%'
-		)
-		WHERE files.is_dir = 1
-		  AND files.disk_id = ?
-	`, diskID)
-	return err
+// dirSizeRow is a lightweight file record used by ComputeAndUpdateDirSizes.
+type dirSizeRow struct {
+	id    int64
+	path  string
+	size  int64
+	isDir bool
+}
+
+// fetchAllFilesForDisk fetches id, path, size, and is_dir for every file
+// belonging to diskID in a single sequential scan.
+func (d *DB) fetchAllFilesForDisk(diskID int64) ([]dirSizeRow, error) {
+	rows, err := d.sql.Query(
+		`SELECT id, path, size, is_dir FROM files WHERE disk_id = ?`,
+		diskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []dirSizeRow
+	for rows.Next() {
+		var r dirSizeRow
+		var isDir int
+		if err := rows.Scan(&r.id, &r.path, &r.size, &isDir); err != nil {
+			return nil, err
+		}
+		r.isDir = isDir == 1
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// groupByCollection partitions files into groups keyed by their first two
+// path components (DiskLabel/CollLabel). Files sitting directly at the disk
+// root (only one component) are grouped under just the disk label. Collections
+// are disjoint subtrees, so each group can be processed independently.
+func groupByCollection(files []dirSizeRow) map[string][]dirSizeRow {
+	groups := make(map[string][]dirSizeRow)
+	for _, f := range files {
+		idx := strings.Index(f.path, "/")
+		if idx < 0 {
+			// Bare disk-root entry — unlikely but safe.
+			groups[f.path] = append(groups[f.path], f)
+			continue
+		}
+		rest := f.path[idx+1:]
+		idx2 := strings.Index(rest, "/")
+		var key string
+		if idx2 < 0 {
+			key = f.path[:idx+1+len(rest)] // DiskLabel/CollLabel (no deeper)
+		} else {
+			key = f.path[:idx+1+idx2] // DiskLabel/CollLabel
+		}
+		groups[key] = append(groups[key], f)
+	}
+	return groups
+}
+
+// computeDirSizes calculates directory sizes for one group of files
+// (typically one collection). For every non-dir file it walks up the path
+// hierarchy and adds the file's size to each ancestor directory.
+// Paths use "/" as separator (stored format). Returns a map of dir ID → size.
+func computeDirSizes(files []dirSizeRow) map[int64]int64 {
+	// Build a lookup from path → dir row for this group.
+	dirByPath := make(map[string]*dirSizeRow, len(files))
+	for i := range files {
+		if files[i].isDir {
+			dirByPath[files[i].path] = &files[i]
+		}
+	}
+
+	accumulator := make(map[int64]int64, len(dirByPath))
+	for _, dr := range dirByPath {
+		accumulator[dr.id] = 0 // initialise all dirs at zero
+	}
+
+	for _, f := range files {
+		if f.isDir {
+			continue
+		}
+		p := f.path
+		for {
+			parent := path.Dir(p) // always uses "/"; returns "." at root
+			if parent == p || parent == "." {
+				break
+			}
+			if dr, ok := dirByPath[parent]; ok {
+				accumulator[dr.id] += f.size
+			}
+			p = parent
+		}
+	}
+	return accumulator
+}
+
+// ComputeAndUpdateDirSizes recomputes directory sizes in Go (O(N × depth))
+// rather than via a correlated SQL subquery (O(N²)). Collections are
+// processed in parallel goroutines for the in-memory computation step; the
+// resulting UPDATEs are written back to SQLite sequentially in batches of 200.
+//
+// progressFn is called after each batch with (done, total) directory counts.
+// Passing nil disables progress reporting.
+func (d *DB) ComputeAndUpdateDirSizes(diskID int64, progressFn func(done, total int)) error {
+	files, err := d.fetchAllFilesForDisk(diskID)
+	if err != nil {
+		return fmt.Errorf("fetch files: %w", err)
+	}
+	if len(files) == 0 {
+		return nil // nothing to do
+	}
+
+	// Parallel computation across disjoint collection subtrees.
+	groups := groupByCollection(files)
+
+	type result struct {
+		sizes map[int64]int64
+	}
+	ch := make(chan result, len(groups))
+	var wg sync.WaitGroup
+	for _, grp := range groups {
+		grp := grp
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch <- result{sizes: computeDirSizes(grp)}
+		}()
+	}
+	// Close channel once all goroutines finish so the range below terminates.
+	go func() { wg.Wait(); close(ch) }()
+
+	merged := make(map[int64]int64)
+	for r := range ch {
+		for id, sz := range r.sizes {
+			merged[id] += sz
+		}
+	}
+
+	// Build the update slice (only directories — entries with id in merged).
+	type dirUpdate struct {
+		id   int64
+		size int64
+	}
+	updates := make([]dirUpdate, 0, len(merged))
+	for id, sz := range merged {
+		updates = append(updates, dirUpdate{id, sz})
+	}
+
+	total := len(updates)
+	if progressFn != nil {
+		progressFn(0, total)
+	}
+	if total == 0 {
+		return nil
+	}
+
+	const batchSize = 200
+	done := 0
+	for len(updates) > 0 {
+		batch := updates
+		if len(batch) > batchSize {
+			batch = updates[:batchSize]
+		}
+		updates = updates[len(batch):]
+
+		tx, err := d.sql.Begin()
+		if err != nil {
+			return err
+		}
+		stmt, err := tx.Prepare(`UPDATE files SET size = ? WHERE id = ?`)
+		if err != nil {
+			tx.Rollback() //nolint:errcheck
+			return err
+		}
+		for _, u := range batch {
+			if _, err := stmt.Exec(u.size, u.id); err != nil {
+				stmt.Close()
+				tx.Rollback() //nolint:errcheck
+				return err
+			}
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+
+		done += len(batch)
+		if progressFn != nil {
+			progressFn(done, total)
+		}
+	}
+	return nil
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────

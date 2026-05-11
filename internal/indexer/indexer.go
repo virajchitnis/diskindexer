@@ -48,6 +48,12 @@ type ProgressUpdate struct {
 	Added      int
 	Updated    int
 	Skipped    int
+	// Total is the estimated total file count (from the pre-walk file map).
+	// Zero means unknown (first run, or --force wipe).
+	Total int
+	// DirsTotal and DirsDone track progress during the "sizes" phase.
+	DirsTotal int
+	DirsDone  int
 }
 
 // Run indexes a disk, performing an incremental update unless Force is set.
@@ -62,7 +68,9 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	stats := &Stats{}
 
 	// report sends a ProgressUpdate with current cumulative totals.
-	report := func(phase, coll string) {
+	// totalEstimate and dir progress are captured by closure after being set below.
+	var totalEstimate int
+	report := func(phase, coll string, dirsTotal, dirsDone int) {
 		if opts.ProgressFn != nil {
 			opts.ProgressFn(ProgressUpdate{
 				Phase:      phase,
@@ -70,12 +78,15 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 				Added:      stats.Added,
 				Updated:    stats.Updated,
 				Skipped:    stats.Skipped,
+				Total:      totalEstimate,
+				DirsTotal:  dirsTotal,
+				DirsDone:   dirsDone,
 			})
 		}
 	}
 
 	if opts.Force {
-		report("clearing", "")
+		report("clearing", "", 0, 0)
 		if err := database.DeleteAllFilesForDisk(disk.ID); err != nil {
 			return nil, fmt.Errorf("clear files: %w", err)
 		}
@@ -88,6 +99,9 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load file map: %w", err)
 	}
+	// Use the existing file count as a total estimate. This is accurate for
+	// incremental re-index runs; zero for first runs and --force (unknown total).
+	totalEstimate = len(fileMap)
 
 	colls, err := resolveCollections(database, disk.ID, opts)
 	if err != nil {
@@ -97,8 +111,8 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	seenPaths := make(map[string]struct{}, len(fileMap))
 
 	for _, coll := range colls {
-		report("indexing", coll.Label)
-		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, opts.ProgressFn); err != nil {
+		report("indexing", coll.Label, 0, 0)
+		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, totalEstimate, opts.ProgressFn); err != nil {
 			return nil, fmt.Errorf("walk collection %q: %w", coll.Label, err)
 		}
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
@@ -135,11 +149,20 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 	}
 	stats.Deleted = len(toDelete)
 
-	// Recompute directory sizes: sum all non-dir file sizes whose path falls
-	// under each directory. Done after all upserts/deletes so the numbers are
-	// accurate, even for directories that were not themselves modified.
-	report("sizes", "")
-	if err := database.UpdateDirSizes(disk.ID); err != nil {
+	// Recompute directory sizes in Go (O(N × depth)) with parallel collection
+	// processing. Done after all upserts/deletes so numbers are accurate.
+	report("sizes", "", 0, 0)
+	sizesProgressFn := func(done, total int) {
+		if opts.ProgressFn != nil {
+			opts.ProgressFn(ProgressUpdate{
+				Phase:     "sizes",
+				Total:     totalEstimate,
+				DirsTotal: total,
+				DirsDone:  done,
+			})
+		}
+	}
+	if err := database.ComputeAndUpdateDirSizes(disk.ID, sizesProgressFn); err != nil {
 		return nil, fmt.Errorf("update dir sizes: %w", err)
 	}
 
@@ -203,6 +226,7 @@ func walkCollection(
 	fileMap map[string]*db.File,
 	seenPaths map[string]struct{},
 	stats *Stats,
+	totalEstimate int,
 	progressFn func(ProgressUpdate),
 ) error {
 	tx, err := database.BeginTx()
@@ -276,6 +300,7 @@ func walkCollection(
 					Added:      stats.Added,
 					Updated:    stats.Updated,
 					Skipped:    stats.Skipped,
+					Total:      totalEstimate,
 				})
 			}
 		}

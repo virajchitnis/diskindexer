@@ -341,3 +341,91 @@ func TestSearch_Limit(t *testing.T) {
 	assert.Len(t, results, 3)
 }
 
+// ── ComputeAndUpdateDirSizes tests ────────────────────────────────────────────
+
+func TestComputeAndUpdateDirSizes_Basic(t *testing.T) {
+	d := openTestDB(t)
+	disk, _ := d.UpsertDisk("Test Disk", "")
+	coll, _ := d.UpsertCollection(disk.ID, "Photos", "/mnt/Photos")
+
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, "Test Disk/Photos", 0, true)))
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, "Test Disk/Photos/a.jpg", 1024, false)))
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, "Test Disk/Photos/b.jpg", 2048, false)))
+
+	var progressCalls []int
+	err := d.ComputeAndUpdateDirSizes(disk.ID, func(done, _ int) {
+		progressCalls = append(progressCalls, done)
+	})
+	require.NoError(t, err)
+
+	fileMap, _ := d.GetFileMapForDisk(disk.ID)
+	assert.Equal(t, int64(3072), fileMap["Test Disk/Photos"].Size)
+
+	// Progress was called at least twice (initial 0 and final N).
+	require.GreaterOrEqual(t, len(progressCalls), 2)
+	assert.Equal(t, 0, progressCalls[0])
+	assert.Equal(t, 1, progressCalls[len(progressCalls)-1]) // 1 dir total
+}
+
+func TestComputeAndUpdateDirSizes_NoDirs(t *testing.T) {
+	d := openTestDB(t)
+	disk, _ := d.UpsertDisk("Test Disk", "")
+	// File only, no directory entry.
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, nil, "Test Disk/root.jpg", 500, false)))
+
+	// Should not error and should not panic.
+	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+}
+
+func TestComputeAndUpdateDirSizes_EmptyDisk(t *testing.T) {
+	d := openTestDB(t)
+	disk, _ := d.UpsertDisk("Test Disk", "")
+	// No files at all.
+	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+}
+
+func TestComputeAndUpdateDirSizes_NestedDirs(t *testing.T) {
+	d := openTestDB(t)
+	disk, _ := d.UpsertDisk("Test Disk", "")
+	coll, _ := d.UpsertCollection(disk.ID, "Work", "/mnt/Work")
+
+	// Hierarchy: Work/ → Sub/ → file.pdf (100 bytes)
+	// Both Work/ and Work/Sub/ should accumulate 100.
+	entries := []struct {
+		p     string
+		size  int64
+		isDir bool
+	}{
+		{"Test Disk/Work", 0, true},
+		{"Test Disk/Work/Sub", 0, true},
+		{"Test Disk/Work/Sub/f.pdf", 100, false},
+	}
+	for _, e := range entries {
+		require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, e.p, e.size, e.isDir)))
+	}
+
+	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+
+	fileMap, _ := d.GetFileMapForDisk(disk.ID)
+	assert.Equal(t, int64(100), fileMap["Test Disk/Work"].Size)
+	assert.Equal(t, int64(100), fileMap["Test Disk/Work/Sub"].Size)
+}
+
+func TestComputeAndUpdateDirSizes_MultipleCollections(t *testing.T) {
+	d := openTestDB(t)
+	disk, _ := d.UpsertDisk("Test Disk", "")
+	c1, _ := d.UpsertCollection(disk.ID, "Photos", "/mnt/Photos")
+	c2, _ := d.UpsertCollection(disk.ID, "Videos", "/mnt/Videos")
+
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c1.ID, "Test Disk/Photos", 0, true)))
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c1.ID, "Test Disk/Photos/a.jpg", 500, false)))
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c2.ID, "Test Disk/Videos", 0, true)))
+	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c2.ID, "Test Disk/Videos/b.mp4", 2000, false)))
+
+	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+
+	fileMap, _ := d.GetFileMapForDisk(disk.ID)
+	assert.Equal(t, int64(500), fileMap["Test Disk/Photos"].Size)
+	assert.Equal(t, int64(2000), fileMap["Test Disk/Videos"].Size)
+}
+

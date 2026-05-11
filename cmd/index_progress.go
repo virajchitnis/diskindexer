@@ -11,6 +11,41 @@ import (
 	"github.com/viraj/diskindexer/internal/indexer"
 )
 
+// formatRate returns a human-readable files/sec rate, or "" if not yet
+// calculable (less than one second elapsed).
+func formatRate(processed int, elapsed time.Duration) string {
+	if elapsed < time.Second || processed == 0 {
+		return ""
+	}
+	rate := float64(processed) / elapsed.Seconds()
+	if rate >= 1000 {
+		return fmt.Sprintf("%.1fk files/s", rate/1000)
+	}
+	return fmt.Sprintf("%.0f files/s", rate)
+}
+
+// formatETA returns "~Xm Ys remaining" or "" when not calculable.
+func formatETA(processed, total int, elapsed time.Duration) string {
+	if total <= 0 || processed <= 0 || processed >= total || elapsed < time.Second {
+		return ""
+	}
+	rate := float64(processed) / elapsed.Seconds()
+	if rate <= 0 {
+		return ""
+	}
+	remaining := time.Duration(float64(total-processed)/rate) * time.Second
+	remaining = remaining.Round(time.Second)
+	if remaining < time.Minute {
+		return fmt.Sprintf("~%ds remaining", int(remaining.Seconds()))
+	}
+	mins := int(remaining.Minutes())
+	secs := int(remaining.Seconds()) % 60
+	if secs == 0 {
+		return fmt.Sprintf("~%dm remaining", mins)
+	}
+	return fmt.Sprintf("~%dm%ds remaining", mins, secs)
+}
+
 // ── Message types ─────────────────────────────────────────────────────────────
 
 type progressUpdateMsg indexer.ProgressUpdate
@@ -127,12 +162,51 @@ func (m progressModel) View() string {
 	b.WriteString("   " + pLabel.Render("Collection: ") + coll)
 	b.WriteByte('\n')
 
-	// Line 3: cumulative counts + elapsed time
-	b.WriteString("   " +
-		pLabel.Render("Added: ") + pNum.Render(fmt.Sprintf("%d", m.update.Added)) + "  " +
-		pLabel.Render("Updated: ") + pNum.Render(fmt.Sprintf("%d", m.update.Updated)) + "  " +
-		pLabel.Render("Unchanged: ") + pNum.Render(fmt.Sprintf("%d", m.update.Skipped)) + "  " +
-		pLabel.Render("Elapsed: ") + elapsed.String())
+	// Line 3: phase-specific progress details
+	if m.update.Phase == "sizes" {
+		dirsTotal := m.update.DirsTotal
+		dirsDone := m.update.DirsDone
+		if dirsTotal > 0 {
+			pct := 100 * dirsDone / dirsTotal
+			b.WriteString("   " +
+				pNum.Render(fmt.Sprintf("%d", dirsDone)) +
+				pLabel.Render(" / ") +
+				pNum.Render(fmt.Sprintf("%d", dirsTotal)) +
+				pLabel.Render(" directories  ") +
+				pLabel.Render(fmt.Sprintf("[%d%%]", pct)) +
+				pLabel.Render("  Elapsed: ") + elapsed.String())
+		} else {
+			b.WriteString("   " + pLabel.Render("scanning…  Elapsed: ") + elapsed.String())
+		}
+	} else {
+		// Indexing / clearing phase.
+		processed := m.update.Added + m.update.Updated + m.update.Skipped
+		total := m.update.Total
+
+		var parts []string
+		// Counts
+		parts = append(parts,
+			pLabel.Render("Added: ")+pNum.Render(fmt.Sprintf("%d", m.update.Added))+"  "+
+				pLabel.Render("Updated: ")+pNum.Render(fmt.Sprintf("%d", m.update.Updated))+"  "+
+				pLabel.Render("Unchanged: ")+pNum.Render(fmt.Sprintf("%d", m.update.Skipped)))
+		// Percentage (only when total is known and we haven't exceeded it)
+		if total > 0 && processed <= total {
+			pct := 100 * processed / total
+			parts = append(parts, pLabel.Render(fmt.Sprintf("[%d%%]", pct)))
+		}
+		// Rate
+		if r := formatRate(processed, elapsed); r != "" {
+			parts = append(parts, pLabel.Render(r))
+		}
+		// ETA
+		if eta := formatETA(processed, total, elapsed); eta != "" {
+			parts = append(parts, pLabel.Render(eta))
+		}
+		// Elapsed
+		parts = append(parts, pLabel.Render("Elapsed: ")+elapsed.String())
+
+		b.WriteString("   " + strings.Join(parts, pLabel.Render("  ")))
+	}
 	b.WriteByte('\n')
 
 	return b.String()
