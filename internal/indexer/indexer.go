@@ -26,6 +26,10 @@ type Options struct {
 	Collections []CollectionSpec
 	// Force wipes existing data before re-indexing from scratch.
 	Force bool
+	// Excludes is a list of directory names (or glob patterns) to skip at any
+	// depth during the walk. Files are never matched; only directories. Example:
+	// [".snapshots", "*.cache"]. Uses filepath.Match for pattern matching.
+	Excludes []string
 	// ProgressFn is called periodically with cumulative progress.
 	// It may be called from any goroutine. Nil disables progress reporting.
 	ProgressFn func(ProgressUpdate)
@@ -112,7 +116,7 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 
 	for _, coll := range colls {
 		report("indexing", coll.Label, 0, 0)
-		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, totalEstimate, opts.ProgressFn); err != nil {
+		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, totalEstimate, opts.Excludes, opts.ProgressFn); err != nil {
 			return nil, fmt.Errorf("walk collection %q: %w", coll.Label, err)
 		}
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
@@ -195,7 +199,7 @@ func resolveCollections(database *db.DB, diskID int64, opts Options) ([]*db.Coll
 			return nil, err
 		}
 		for _, e := range entries {
-			if e.IsDir() && !isHidden(e.Name()) {
+			if e.IsDir() && !isHidden(e.Name()) && !isExcluded(e.Name(), opts.Excludes) {
 				specs = append(specs, CollectionSpec{
 					Label:    e.Name(),
 					RootPath: filepath.Join(opts.MountPath, e.Name()),
@@ -227,6 +231,7 @@ func walkCollection(
 	seenPaths map[string]struct{},
 	stats *Stats,
 	totalEstimate int,
+	excludes []string,
 	progressFn func(ProgressUpdate),
 ) error {
 	tx, err := database.BeginTx()
@@ -242,6 +247,10 @@ func walkCollection(
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
+		}
+		// Skip excluded directories (and everything beneath them).
+		if d.IsDir() && absPath != coll.RootPath && isExcluded(d.Name(), excludes) {
+			return fs.SkipDir
 		}
 
 		// Path is always relative to the collection root so that collections
@@ -397,6 +406,23 @@ func fileFromEntry(diskID int64, collID *int64, relPath string, info fs.FileInfo
 
 func isHidden(name string) bool {
 	return len(name) > 0 && name[0] == '.'
+}
+
+// isExcluded reports whether a directory name matches any of the given exclude
+// patterns. Patterns follow filepath.Match syntax (e.g. ".snapshots", "*.tmp").
+// An invalid pattern is silently treated as a literal string comparison.
+func isExcluded(name string, excludes []string) bool {
+	for _, pattern := range excludes {
+		matched, err := filepath.Match(pattern, name)
+		if err != nil {
+			// Malformed pattern — fall back to exact match.
+			matched = pattern == name
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseCollectionSpec parses "Label:/absolute/path" into a CollectionSpec.

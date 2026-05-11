@@ -14,6 +14,7 @@ var (
 	indexDiskLabel   string
 	indexDescription string
 	indexCollections []string
+	indexExcludes    []string
 	indexForce       bool
 )
 
@@ -44,6 +45,8 @@ func init() {
 		cmd.Flags().StringVar(&indexDescription, "description", "", "disk description")
 		cmd.Flags().StringArrayVar(&indexCollections, "collection", nil,
 			"manual collection spec: \"Label:/absolute/path\" (repeatable; disables auto-detect)")
+		cmd.Flags().StringArrayVar(&indexExcludes, "exclude", nil,
+			"directory name or glob pattern to skip at any depth (repeatable; e.g. --exclude .snapshots)")
 		cmd.Flags().BoolVar(&indexForce, "force", false, "wipe existing index for this disk and re-index from scratch")
 		_ = cmd.MarkFlagRequired("disk")
 	}
@@ -79,6 +82,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		Description: indexDescription,
 		MountPath:   mountPath,
 		Collections: collSpecs,
+		Excludes:    indexExcludes,
 		Force:       indexForce,
 	}
 

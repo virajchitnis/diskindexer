@@ -106,10 +106,13 @@ diskindexer index <mount-path> --disk "Label" [flags]
 | `--disk` | Disk label (required) |
 | `--description` | Optional description |
 | `--collection "Label:/path"` | Manually specify a collection (repeatable; disables auto-detection) |
+| `--exclude name` | Directory name or glob to skip at any depth (repeatable) |
 | `--force` | Wipe and re-index from scratch |
 | `--db` | Path to `.diskindex` file |
 
 Collections are auto-detected as top-level directories. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
+
+Use `--exclude` to skip directories by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). Excluded directories and all their contents are omitted from the index.
 
 ```bash
 # Auto-detect collections (top-level dirs become collections)
@@ -119,6 +122,11 @@ diskindexer index /Volumes/Seagate --disk "Seagate 4TB"
 diskindexer index /Volumes/Seagate --disk "Seagate 4TB" \
   --collection "Photos:/Volumes/Seagate/Photos" \
   --collection "Archive:/Volumes/OtherDisk/Archive"
+
+# Exclude snapshot and cache directories at any depth
+diskindexer index /Volumes/Seagate --disk "Seagate 4TB" \
+  --exclude .snapshots \
+  --exclude "*.cache"
 
 # Force a full re-index
 diskindexer index /Volumes/Seagate --disk "Seagate 4TB" --force

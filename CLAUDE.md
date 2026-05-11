@@ -86,8 +86,8 @@ known_dbs = [
 ## CLI Commands
 
 ```bash
-diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--force]
-diskindexer reindex <mount-path> --disk "Label" [--db path]
+diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--exclude name] [--force]
+diskindexer reindex <mount-path> --disk "Label" [--db path] [--exclude name]
 diskindexer disks [--db path]
 diskindexer delete-disk --disk "Label" [--db path]
 diskindexer collections [--disk "Label"] [--db path]

@@ -246,6 +246,87 @@ func TestRun_ManualCollectionPathIsFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a directory")
 }
 
+func TestRun_ExcludeByName(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/":                          "",
+		"Photos/img001.jpg":                "x",
+		"Photos/.snapshots/":               "",
+		"Photos/.snapshots/snap001.jpg":    "snap",
+		"Photos/sub/.snapshots/":           "",
+		"Photos/sub/.snapshots/deep.jpg":   "deep",
+	})
+
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "Test Disk",
+		MountPath: root,
+		Excludes:  []string{".snapshots"},
+	})
+	require.NoError(t, err)
+
+	fileMap, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+
+	// The regular file should be indexed.
+	assert.Contains(t, fileMap, "Test Disk/Photos/img001.jpg")
+	// Nothing inside .snapshots at any depth should be indexed.
+	for p := range fileMap {
+		assert.NotContains(t, p, ".snapshots", "excluded path leaked into index: %s", p)
+	}
+}
+
+func TestRun_ExcludeGlobPattern(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/":                "",
+		"Photos/img001.jpg":      "x",
+		"Photos/tmp_cache/":      "",
+		"Photos/tmp_cache/a.jpg": "y",
+		"Photos/tmp_data/":       "",
+		"Photos/tmp_data/b.jpg":  "z",
+	})
+
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "Test Disk",
+		MountPath: root,
+		Excludes:  []string{"tmp_*"},
+	})
+	require.NoError(t, err)
+
+	fileMap, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+
+	assert.Contains(t, fileMap, "Test Disk/Photos/img001.jpg")
+	for p := range fileMap {
+		assert.NotContains(t, p, "tmp_", "glob-excluded path leaked into index: %s", p)
+	}
+}
+
+func TestRun_ExcludeTopLevelCollection(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/":               "",
+		"Photos/img001.jpg":     "x",
+		".snapshots/":           "",
+		".snapshots/backup.jpg": "snap",
+	})
+
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "Test Disk",
+		MountPath: root,
+		Excludes:  []string{".snapshots"},
+	})
+	require.NoError(t, err)
+
+	fileMap, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+
+	assert.Contains(t, fileMap, "Test Disk/Photos/img001.jpg")
+	for p := range fileMap {
+		assert.NotContains(t, p, ".snapshots", "excluded top-level collection leaked: %s", p)
+	}
+}
+
 func TestRun_ProgressUpdateCarriesTotal(t *testing.T) {
 	d := openTestDB(t)
 	root := makeDisk(t, map[string]string{
