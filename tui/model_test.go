@@ -320,7 +320,7 @@ func TestBuildParams_EmptyQuery(t *testing.T) {
 	assert.Equal(t, "", p.Query)
 	assert.Nil(t, p.IsDir)
 	assert.Equal(t, "", p.DiskLabel)
-	assert.Equal(t, 0, p.Limit)
+	assert.Equal(t, 500, p.Limit)
 }
 
 func TestBuildParams_WithQuery(t *testing.T) {

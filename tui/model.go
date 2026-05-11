@@ -413,7 +413,7 @@ func (m Model) BuildParams() db.SearchParams {
 func (m Model) buildParams() db.SearchParams {
 	p := db.SearchParams{
 		Query: m.input.Value(),
-		Limit: 0, // no limit in TUI
+		Limit: 500,
 	}
 	if m.diskIdx > 0 && m.diskIdx < len(m.diskNames) {
 		p.DiskLabel = m.diskNames[m.diskIdx]
@@ -613,8 +613,14 @@ func (m Model) renderResults() string {
 
 func (m Model) renderStatus() string {
 	// Line 1: result count + path/status message
-	count := styles.count.Render(fmt.Sprintf(" %d", len(m.results)))
+	n := len(m.results)
+	countStr := fmt.Sprintf(" %d", n)
 	suffix := " results"
+	if n == 500 {
+		countStr = " 500+"
+		suffix = " results — refine your search to see more"
+	}
+	count := styles.count.Render(countStr)
 
 	var detail string
 	if m.statusMsg != "" {
