@@ -461,20 +461,12 @@ func (m Model) togglePanel() (tea.Model, tea.Cmd) {
 		m.panelCursor = m.panelActiveIdx()
 		return m, nil
 	}
-	if m.panelFocused {
-		// Panel is focused → hide it, return to search bar.
-		m.showPanel = false
-		m.panelFocused = false
-		m.inputFocused = true
-		m.input.Focus()
-		return m, textinput.Blink
-	}
-	// Panel is visible but not focused → focus it.
-	m.panelFocused = true
-	m.inputFocused = false
-	m.input.Blur()
-	m.panelCursor = m.panelActiveIdx()
-	return m, nil
+	// Panel is visible → always close it and return focus to search bar.
+	m.showPanel = false
+	m.panelFocused = false
+	m.inputFocused = true
+	m.input.Focus()
+	return m, textinput.Blink
 }
 
 func (m Model) handlePanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -526,8 +518,11 @@ func (m Model) handlePanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.applyPanelNode(nodes[m.panelCursor])
 		}
 
-	case "esc", "b":
-		// Unfocus panel, return to search bar (keep panel visible).
+	case "b":
+		// b always closes the panel entirely.
+		return m.togglePanel()
+	case "esc":
+		// Esc unfocuses panel, returns to search bar (keeps panel visible).
 		m.panelFocused = false
 		m.inputFocused = true
 		m.input.Focus()

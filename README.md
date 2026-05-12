@@ -10,7 +10,8 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Incremental indexing** — only processes changed, new, or deleted files on subsequent runs
 - **Directory sizes** — computed automatically at the end of every index run; no re-scan needed
 - **Collections** — top-level directories are auto-detected as collections; manual override supported
-- **Interactive TUI** — live search with disk, collection, and type filters, sorting, detail panel, and one-key clipboard copy
+- **Interactive TUI** — live search with disk, collection, and type filters, sorting, browser panel, detail panel, and one-key clipboard copy
+- **Exclude directories** — skip directories by name or glob at any depth during indexing (`--exclude`)
 - **Duplicate highlighting** — files sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
@@ -226,9 +227,9 @@ diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 | Key | Action |
 |---|---|
 | Type | Live search (150ms debounce) |
-| `↑` / `↓` or `j` / `k` | Navigate results (or browser panel when focused) |
+| `↑` / `↓` or `j` / `k` | Navigate results |
 | `PgUp` / `PgDn` | Page through results |
-| `Enter` | Copy file path to clipboard (or apply filter in browser panel) |
+| `Enter` | Copy file path to clipboard |
 | `Tab` | Move focus to results |
 | `/` or `Esc` | Move focus back to search bar |
 | `d` / `D` | Cycle disk filter forward / backward |
@@ -236,8 +237,11 @@ diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 | `t` | Cycle type filter (All → Files → Dirs) |
 | `s` | Cycle sort (NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼) |
 | `i` | Toggle detail panel (full path, size, date, disk, collection) |
-| `b` | Toggle disk/collection browser panel |
+| `b` | Toggle disk/collection browser panel (open/close from any zone) |
+| `↑` / `↓` or `j` / `k` (browser) | Navigate browser panel |
 | `→` / `←` (browser) | Expand / collapse a disk node |
+| `Enter` or `Space` (browser) | Apply selected disk or collection as filter |
+| `Esc` (browser) | Unfocus browser, return to search bar (panel stays open) |
 | `q` or `Ctrl+C` | Quit |
 
 ## Path Format
