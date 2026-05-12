@@ -87,6 +87,18 @@ func (s sortMode) label() string {
 	return s.col() + " " + arrow
 }
 
+// ── Panel types ───────────────────────────────────────────────────────────────
+
+// panelWidth is the fixed character width of the browser sidebar (excluding divider).
+const panelWidth = 28
+
+// panelNode represents one row in the browser panel tree.
+type panelNode struct {
+	diskLabel string
+	collLabel string // empty = disk node
+	isAll     bool   // the "(all)" node at the top
+}
+
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 // Model is the bubbletea model for the interactive search TUI.
@@ -105,9 +117,9 @@ type Model struct {
 
 	// results
 	results []search.Result
-	cursor  int              // selected row (absolute index)
-	offset  int              // first visible row
-	dupeSet map[string]bool  // keys of potential duplicates (name|size)
+	cursor  int             // selected row (absolute index)
+	offset  int             // first visible row
+	dupeSet map[string]bool // keys of potential duplicates (name|size)
 
 	// debounce: each search trigger increments searchSeq; stale results are dropped
 	searchSeq int
@@ -128,6 +140,12 @@ type Model struct {
 
 	// whether the detail panel is visible
 	showDetail bool
+
+	// browser panel
+	showPanel     bool
+	panelFocused  bool
+	panelCursor   int
+	panelExpanded map[string]bool // disk label → expanded; nil until first open
 
 	err error
 }
@@ -202,6 +220,19 @@ func (m Model) buildCollNames() []string {
 	return append(result, m.collsByDisk[diskName]...)
 }
 
+// contentWidth returns the effective width available for the main content area.
+// When the browser panel is visible it subtracts the panel width and divider.
+func (m Model) contentWidth() int {
+	if m.showPanel {
+		w := m.width - panelWidth - 1
+		if w < 40 {
+			return 40
+		}
+		return w
+	}
+	return m.width
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
@@ -251,6 +282,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.panelFocused {
+			return m.handlePanelKey(msg)
+		}
 		if m.inputFocused {
 			return m.handleInputKey(msg)
 		}
@@ -277,6 +311,9 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputFocused = false
 		m.input.Blur()
 		return m, nil
+
+	case "b":
+		return m.togglePanel()
 
 	default:
 		prev := m.input.Value()
@@ -385,6 +422,9 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampViewport()
 		return m, nil
 
+	case "b":
+		return m.togglePanel()
+
 	case "enter":
 		if len(m.results) == 0 || m.cursor >= len(m.results) {
 			return m, nil
@@ -401,6 +441,180 @@ func (m Model) handleResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// togglePanel implements the b-key logic for showing/hiding/focusing the panel.
+func (m Model) togglePanel() (tea.Model, tea.Cmd) {
+	if !m.showPanel {
+		// Open panel and focus it.
+		m.showPanel = true
+		m.panelFocused = true
+		m.inputFocused = false
+		m.input.Blur()
+		// Lazy-init: expand all disks on first open.
+		if m.panelExpanded == nil {
+			m.panelExpanded = make(map[string]bool)
+			for _, disk := range m.diskNames[1:] {
+				m.panelExpanded[disk] = true
+			}
+		}
+		m.panelCursor = m.panelActiveIdx()
+		return m, nil
+	}
+	if m.panelFocused {
+		// Panel is focused → hide it, return to search bar.
+		m.showPanel = false
+		m.panelFocused = false
+		m.inputFocused = true
+		m.input.Focus()
+		return m, textinput.Blink
+	}
+	// Panel is visible but not focused → focus it.
+	m.panelFocused = true
+	m.inputFocused = false
+	m.input.Blur()
+	m.panelCursor = m.panelActiveIdx()
+	return m, nil
+}
+
+func (m Model) handlePanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	nodes := m.buildPanelNodes()
+
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "up", "k":
+		if m.panelCursor > 0 {
+			m.panelCursor--
+		}
+
+	case "down", "j":
+		if m.panelCursor < len(nodes)-1 {
+			m.panelCursor++
+		}
+
+	case "right", "l":
+		if m.panelCursor < len(nodes) {
+			node := nodes[m.panelCursor]
+			if !node.isAll && node.collLabel == "" {
+				m.panelExpanded[node.diskLabel] = true
+			}
+		}
+
+	case "left", "h":
+		if m.panelCursor < len(nodes) {
+			node := nodes[m.panelCursor]
+			if !node.isAll && node.collLabel == "" {
+				// Collapse this disk.
+				m.panelExpanded[node.diskLabel] = false
+			} else if node.collLabel != "" {
+				// On a collection: collapse parent disk, move cursor to it.
+				m.panelExpanded[node.diskLabel] = false
+				newNodes := m.buildPanelNodes()
+				for i, n := range newNodes {
+					if !n.isAll && n.collLabel == "" && n.diskLabel == node.diskLabel {
+						m.panelCursor = i
+						break
+					}
+				}
+			}
+		}
+
+	case "enter", " ":
+		if m.panelCursor < len(nodes) {
+			return m.applyPanelNode(nodes[m.panelCursor])
+		}
+
+	case "esc", "b":
+		// Unfocus panel, return to search bar (keep panel visible).
+		m.panelFocused = false
+		m.inputFocused = true
+		m.input.Focus()
+		return m, textinput.Blink
+	}
+
+	m.clampPanelCursor()
+	return m, nil
+}
+
+// applyPanelNode sets diskIdx/collIdx to match the selected panel node and
+// triggers a new search. The panel stays open.
+func (m Model) applyPanelNode(node panelNode) (tea.Model, tea.Cmd) {
+	if node.isAll {
+		m.diskIdx = 0
+		m.collIdx = 0
+		m.collNames = m.buildCollNames()
+	} else if node.collLabel == "" {
+		// Disk node.
+		for i, name := range m.diskNames {
+			if name == node.diskLabel {
+				m.diskIdx = i
+				break
+			}
+		}
+		m.collIdx = 0
+		m.collNames = m.buildCollNames()
+	} else {
+		// Collection node.
+		for i, name := range m.diskNames {
+			if name == node.diskLabel {
+				m.diskIdx = i
+				break
+			}
+		}
+		m.collNames = m.buildCollNames()
+		for i, name := range m.collNames {
+			if name == node.collLabel {
+				m.collIdx = i
+				break
+			}
+		}
+	}
+	m.searchSeq++
+	return m, m.startSearch()
+}
+
+// panelActiveIdx returns the index in buildPanelNodes() that matches the
+// current diskIdx/collIdx filter state.
+func (m Model) panelActiveIdx() int {
+	activeDisk := ""
+	if m.diskIdx > 0 && m.diskIdx < len(m.diskNames) {
+		activeDisk = m.diskNames[m.diskIdx]
+	}
+	activeColl := ""
+	if m.collIdx > 0 && m.collIdx < len(m.collNames) {
+		activeColl = m.collNames[m.collIdx]
+	}
+
+	nodes := m.buildPanelNodes()
+	for i, n := range nodes {
+		if n.isAll && activeDisk == "" && activeColl == "" {
+			return i
+		}
+		if !n.isAll && n.collLabel == "" && n.diskLabel == activeDisk && activeColl == "" {
+			return i
+		}
+		if !n.isAll && n.diskLabel == activeDisk && n.collLabel == activeColl && activeColl != "" {
+			return i
+		}
+	}
+	return 0
+}
+
+// buildPanelNodes returns the flat list of visible panel rows based on the
+// current expansion state.
+func (m Model) buildPanelNodes() []panelNode {
+	nodes := []panelNode{{isAll: true}}
+	for _, disk := range m.diskNames[1:] { // skip "(all)"
+		nodes = append(nodes, panelNode{diskLabel: disk})
+		if m.panelExpanded[disk] {
+			for _, coll := range m.collsByDisk[disk] {
+				nodes = append(nodes, panelNode{diskLabel: disk, collLabel: coll})
+			}
+		}
+	}
+	return nodes
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -474,6 +688,16 @@ func (m *Model) clampViewport() {
 	}
 }
 
+func (m *Model) clampPanelCursor() {
+	nodes := m.buildPanelNodes()
+	if m.panelCursor < 0 {
+		m.panelCursor = 0
+	}
+	if len(nodes) > 0 && m.panelCursor >= len(nodes) {
+		m.panelCursor = len(nodes) - 1
+	}
+}
+
 // visibleRows returns how many result rows fit in the current terminal.
 func (m Model) visibleRows() int {
 	// overhead: title(1) + search(1) + filters(1) + divider(1) + header(1) + divider(1) + status(2) = 8
@@ -496,6 +720,25 @@ func (m Model) View() string {
 		return "Loading…\n"
 	}
 
+	main := m.renderMain()
+	if !m.showPanel {
+		return main
+	}
+
+	sidebar := m.renderSidebar()
+	// Build a single-column divider matching the sidebar height.
+	lineCount := strings.Count(sidebar, "\n") + 1
+	divLines := make([]string, lineCount)
+	for i := range divLines {
+		divLines[i] = styles.divider.Render("│")
+	}
+	divider := strings.Join(divLines, "\n")
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, divider, main)
+}
+
+func (m Model) renderMain() string {
+	w := m.contentWidth()
 	var b strings.Builder
 
 	// Title
@@ -515,7 +758,7 @@ func (m Model) View() string {
 	b.WriteByte('\n')
 
 	// Divider
-	b.WriteString(styles.divider.Render(strings.Repeat("─", m.width)))
+	b.WriteString(styles.divider.Render(strings.Repeat("─", w)))
 	b.WriteByte('\n')
 
 	// Column headers
@@ -526,7 +769,7 @@ func (m Model) View() string {
 	b.WriteString(m.renderResults())
 
 	// Divider
-	b.WriteString(styles.divider.Render(strings.Repeat("─", m.width)))
+	b.WriteString(styles.divider.Render(strings.Repeat("─", w)))
 	b.WriteByte('\n')
 
 	// Detail panel
@@ -536,6 +779,92 @@ func (m Model) View() string {
 
 	// Status
 	b.WriteString(m.renderStatus())
+
+	return b.String()
+}
+
+// renderSidebar renders the browser panel as a fixed-width string.
+func (m Model) renderSidebar() string {
+	nodes := m.buildPanelNodes()
+
+	// Active filter for highlighting.
+	activeDisk := ""
+	if m.diskIdx > 0 && m.diskIdx < len(m.diskNames) {
+		activeDisk = m.diskNames[m.diskIdx]
+	}
+	activeColl := ""
+	if m.collIdx > 0 && m.collIdx < len(m.collNames) {
+		activeColl = m.collNames[m.collIdx]
+	}
+
+	var b strings.Builder
+
+	// Title row.
+	b.WriteString(styles.panelTitle.Width(panelWidth).Render(" Disks & Collections"))
+	b.WriteByte('\n')
+
+	// Divider row.
+	b.WriteString(styles.divider.Width(panelWidth).Render(" " + strings.Repeat("─", panelWidth-1)))
+	b.WriteByte('\n')
+
+	linesUsed := 2
+
+	for i, node := range nodes {
+		// Determine whether this node matches the active filter.
+		isActive := false
+		switch {
+		case node.isAll:
+			isActive = activeDisk == "" && activeColl == ""
+		case node.collLabel == "":
+			isActive = node.diskLabel == activeDisk && activeColl == ""
+		default:
+			isActive = node.diskLabel == activeDisk && node.collLabel == activeColl
+		}
+
+		// Build the text for this row.
+		bullet := "○"
+		if isActive {
+			bullet = "●"
+		}
+		var text string
+		switch {
+		case node.isAll:
+			text = " " + bullet + " (all)"
+		case node.collLabel == "":
+			arrow := "▶"
+			if m.panelExpanded[node.diskLabel] {
+				arrow = "▼"
+			}
+			text = " " + arrow + " " + node.diskLabel
+		default:
+			text = "   " + bullet + " " + node.collLabel
+		}
+		text = truncate(text, panelWidth)
+
+		isCursor := m.panelFocused && i == m.panelCursor
+
+		var line string
+		switch {
+		case isCursor:
+			line = styles.panelCursor.Width(panelWidth).Render(text)
+		case isActive:
+			line = styles.panelActive.Width(panelWidth).Render(text)
+		default:
+			line = lipgloss.NewStyle().Width(panelWidth).Render(text)
+		}
+
+		b.WriteString(line)
+		b.WriteByte('\n')
+		linesUsed++
+	}
+
+	// Pad remaining lines to fill the terminal height so the divider extends fully.
+	blank := strings.Repeat(" ", panelWidth)
+	for linesUsed < m.height {
+		b.WriteString(blank)
+		b.WriteByte('\n')
+		linesUsed++
+	}
 
 	return b.String()
 }
@@ -624,7 +953,7 @@ func (m Model) renderResults() string {
 
 		isDupe := !f.IsDir && m.dupeSet[f.Name+"|"+strconv.FormatInt(f.Size, 10)]
 		if i == m.cursor {
-			b.WriteString(styles.selected.Width(m.width).Render(line))
+			b.WriteString(styles.selected.Width(m.contentWidth()).Render(line))
 		} else if isDupe {
 			b.WriteString(styles.dupe.Render(line))
 		} else {
@@ -668,7 +997,8 @@ func (m Model) renderStatus() string {
 		styles.dim.Render("[enter]") + " copy path" + sep +
 		styles.dim.Render("[/]") + " search" + sep +
 		styles.dim.Render("[d]") + " disk" + sep +
-		styles.dim.Render("[c]") + " collection" + sep +
+		styles.dim.Render("[c]") + " coll" + sep +
+		styles.dim.Render("[b]") + " browser" + sep +
 		styles.dim.Render("[t]") + " type" + sep +
 		styles.dim.Render("[s]") + " sort" + sep +
 		styles.dim.Render("[i]") + " detail" + sep +
@@ -686,7 +1016,7 @@ type colWidths struct {
 func (m Model) colWidths() colWidths {
 	// Fixed columns: size(8) + date(10) + separators("  " × 4) + indent("  ") = 28
 	const fixed = 8 + 10 + 2*4 + 2
-	flex := m.width - fixed
+	flex := m.contentWidth() - fixed
 	if flex < 42 {
 		flex = 42
 	}
@@ -705,7 +1035,7 @@ func (m Model) colWidths() colWidths {
 	return colWidths{nameW, diskW, collW}
 }
 
-// ── String helpers ────────────────────────────────────────────────────────────
+// ── Detail panel ──────────────────────────────────────────────────────────────
 
 // renderDetail renders the 3-line detail panel for the currently selected entry.
 func (m Model) renderDetail() string {
@@ -744,6 +1074,8 @@ func (m Model) renderDetail() string {
 
 	return line1 + "\n" + line2 + "\n" + line3 + "\n"
 }
+
+// ── String helpers ────────────────────────────────────────────────────────────
 
 // formatCommas formats an integer with thousands separators.
 func formatCommas(n int64) string {

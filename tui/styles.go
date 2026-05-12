@@ -3,19 +3,22 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 type styleSet struct {
-	title      lipgloss.Style
-	label      lipgloss.Style
-	filterKey  lipgloss.Style
-	filterVal  lipgloss.Style
-	colHeader  lipgloss.Style
-	selected   lipgloss.Style
-	dim        lipgloss.Style
-	divider    lipgloss.Style
-	count      lipgloss.Style
-	statusMsg  lipgloss.Style
-	errStyle   lipgloss.Style
-	detailPath lipgloss.Style
-	dupe       lipgloss.Style
+	title       lipgloss.Style
+	label       lipgloss.Style
+	filterKey   lipgloss.Style
+	filterVal   lipgloss.Style
+	colHeader   lipgloss.Style
+	selected    lipgloss.Style
+	dim         lipgloss.Style
+	divider     lipgloss.Style
+	count       lipgloss.Style
+	statusMsg   lipgloss.Style
+	errStyle    lipgloss.Style
+	detailPath  lipgloss.Style
+	dupe        lipgloss.Style
+	panelTitle  lipgloss.Style
+	panelActive lipgloss.Style
+	panelCursor lipgloss.Style
 }
 
 var styles = styleSet{
@@ -57,4 +60,14 @@ var styles = styleSet{
 
 	dupe: lipgloss.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#b35900", Dark: "#ffb347"}),
+
+	panelTitle: lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#7dcfff"}),
+
+	panelActive: lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.AdaptiveColor{Light: "#0066cc", Dark: "#7dcfff"}),
+
+	panelCursor: lipgloss.NewStyle().
+		Background(lipgloss.AdaptiveColor{Light: "#dddddd", Dark: "#2a2a2a"}).
+		Foreground(lipgloss.AdaptiveColor{Light: "#111111", Dark: "#eeeeee"}),
 }

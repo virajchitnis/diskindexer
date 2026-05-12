@@ -226,9 +226,9 @@ diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 | Key | Action |
 |---|---|
 | Type | Live search (150ms debounce) |
-| `↑` / `↓` or `j` / `k` | Navigate results |
+| `↑` / `↓` or `j` / `k` | Navigate results (or browser panel when focused) |
 | `PgUp` / `PgDn` | Page through results |
-| `Enter` | Copy file path to clipboard |
+| `Enter` | Copy file path to clipboard (or apply filter in browser panel) |
 | `Tab` | Move focus to results |
 | `/` or `Esc` | Move focus back to search bar |
 | `d` / `D` | Cycle disk filter forward / backward |
@@ -236,6 +236,8 @@ diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 | `t` | Cycle type filter (All → Files → Dirs) |
 | `s` | Cycle sort (NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼) |
 | `i` | Toggle detail panel (full path, size, date, disk, collection) |
+| `b` | Toggle disk/collection browser panel |
+| `→` / `←` (browser) | Expand / collapse a disk node |
 | `q` or `Ctrl+C` | Quit |
 
 ## Path Format

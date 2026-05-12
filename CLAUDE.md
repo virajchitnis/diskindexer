@@ -100,13 +100,15 @@ diskindexer --version
 ## TUI Features
 
 - **Live search**: 150ms debounce on every keystroke; no explicit submit needed.
+- **Result cap**: TUI fetches at most 500 results; a `500+` indicator appears in the status bar when the cap is hit. Narrowing the query reveals more results.
+- **Search spinner**: A spinner animates in the search bar while a query is in flight.
 - **Sorting**: `s` cycles NAME ▲▼ → SIZE ▲▼ → MODIFIED ▲▼ using `sort.SliceStable`.
 - **Type filter**: `t` cycles All → Files → Dirs.
 - **Disk filter**: `d`/`D` cycles forward/backward through indexed disks.
 - **Collection filter**: `c`/`C` cycles forward/backward through collections. Coupled to the disk filter: selecting a disk narrows the collection list to only that disk's collections, and changing the disk resets the collection to "(all)". When disk is "(all)", all unique collection names across all disks are shown.
+- **Browser panel**: `b` toggles a 28-char sidebar on the left showing all disks and their collections as an expandable tree. Navigating the panel with `↑`/`↓` and pressing `Enter` sets the disk/collection filter (synced with the `d`/`c` chips at the top). `→`/`←` expand or collapse disk nodes. `Esc` or `b` while panel is focused returns focus to the search bar without closing the panel.
 - **Detail panel**: `i` toggles a 3-line panel below the selected row showing full path, size (with commas), modified date, type, disk, and collection.
 - **Duplicate highlighting**: files sharing the same `name|size` across all results are rendered in amber. Directories are excluded from dupe detection.
-- **No result limit**: TUI always fetches all matching results (`Limit: 0`).
 - **Clipboard**: `Enter` copies the full path to the system clipboard.
 
 ## Potential Future Features
