@@ -312,9 +312,6 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		return m, nil
 
-	case "b":
-		return m.togglePanel()
-
 	default:
 		prev := m.input.Value()
 		var cmd tea.Cmd
