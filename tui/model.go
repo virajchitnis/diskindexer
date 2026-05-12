@@ -943,7 +943,7 @@ func (m Model) renderResults() string {
 			f.ModifiedAt.Format("2006-01-02"),
 		)
 
-		isDupe := !f.IsDir && m.dupeSet[f.Name+"|"+strconv.FormatInt(f.Size, 10)]
+		isDupe := m.dupeSet[f.Name+"|"+strconv.FormatInt(f.Size, 10)]
 		if i == m.cursor {
 			b.WriteString(styles.selected.Width(m.contentWidth()).Render(line))
 		} else if isDupe {
@@ -1087,13 +1087,16 @@ func formatCommas(n int64) string {
 	return b.String()
 }
 
-// buildDupeSet returns a set of "name|size" keys for files that appear more
+// buildDupeSet returns a set of "name|size" keys for entries that appear more
 // than once in results (potential duplicates across any disk or collection).
-// Directories are excluded — same-named dirs are common and not meaningful.
+// Zero-size directories are excluded — they are either empty or haven't had
+// sizes computed yet, so same-named zero-size dirs are not a useful signal.
+// Sized directories (size > 0) are included: matching name and total size
+// across disks strongly suggests identical directory contents.
 func buildDupeSet(results []search.Result) map[string]bool {
 	counts := make(map[string]int, len(results))
 	for _, r := range results {
-		if r.File.IsDir {
+		if r.File.IsDir && r.File.Size == 0 {
 			continue
 		}
 		key := r.File.Name + "|" + strconv.FormatInt(r.File.Size, 10)

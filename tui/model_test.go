@@ -597,13 +597,24 @@ func TestDupes_SameNameDifferentSize(t *testing.T) {
 	assert.Empty(t, dupes) // different sizes → not duplicates
 }
 
-func TestDupes_DirsExcluded(t *testing.T) {
+func TestDupes_ZeroSizeDirsExcluded(t *testing.T) {
+	// Zero-size dirs (empty or not yet sized) should not be flagged.
 	results := []search.Result{
 		{File: &db.File{Name: "Photos", IsDir: true, Size: 0}},
 		{File: &db.File{Name: "Photos", IsDir: true, Size: 0}},
 	}
 	dupes := buildDupeSet(results)
 	assert.Empty(t, dupes)
+}
+
+func TestDupes_DirsIncludedWhenSized(t *testing.T) {
+	// Directories with the same name and non-zero size should be flagged.
+	results := []search.Result{
+		{File: &db.File{Name: "Photos", IsDir: true, Size: 4096}},
+		{File: &db.File{Name: "Photos", IsDir: true, Size: 4096}},
+	}
+	dupes := buildDupeSet(results)
+	assert.True(t, dupes["Photos|4096"])
 }
 
 func TestDupes_PopulatedOnResultsReceived(t *testing.T) {

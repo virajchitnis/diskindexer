@@ -108,7 +108,7 @@ diskindexer --version
 - **Collection filter**: `c`/`C` cycles forward/backward through collections. Coupled to the disk filter: selecting a disk narrows the collection list to only that disk's collections, and changing the disk resets the collection to "(all)". When disk is "(all)", all unique collection names across all disks are shown.
 - **Browser panel**: `b` toggles a 28-char sidebar on the left showing all disks and their collections as an expandable tree. Navigating the panel with `↑`/`↓` and pressing `Enter` sets the disk/collection filter (synced with the `d`/`c` chips at the top). `→`/`←` expand or collapse disk nodes. `Esc` or `b` while panel is focused returns focus to the search bar without closing the panel.
 - **Detail panel**: `i` toggles a 3-line panel below the selected row showing full path, size (with commas), modified date, type, disk, and collection.
-- **Duplicate highlighting**: files sharing the same `name|size` across all results are rendered in amber. Directories are excluded from dupe detection.
+- **Duplicate highlighting**: entries sharing the same `name|size` across all results are rendered in amber. This applies to both files and directories; zero-size directories are excluded (empty or not yet sized).
 - **Clipboard**: `Enter` copies the full path to the system clipboard.
 
 ## Potential Future Features

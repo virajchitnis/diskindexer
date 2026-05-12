@@ -12,7 +12,7 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Collections** — top-level directories are auto-detected as collections; manual override supported
 - **Interactive TUI** — live search with disk, collection, and type filters, sorting, browser panel, detail panel, and one-key clipboard copy
 - **Exclude directories** — skip directories by name or glob at any depth during indexing (`--exclude`)
-- **Duplicate highlighting** — files sharing the same name and size are highlighted across all disks
+- **Duplicate highlighting** — files and directories sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
 - **Static binary** — no runtime dependencies; single binary for Linux and macOS
@@ -256,7 +256,7 @@ File paths in the index are stored as `DiskLabel/Collection/path/to/file`. This 
 - **Directory sizes** — computed at the end of every index or reindex run by summing all non-directory file sizes beneath each directory. Re-indexing an existing disk populates sizes for directories that were previously recorded with a size of 0.
 - **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection.
 - **Multi-DB search** — each `.diskindex` is queried independently; results are merged and sorted in memory.
-- **Duplicate highlighting** — the TUI marks files that share the same name and size (across all indexed disks) in amber.
+- **Duplicate highlighting** — the TUI marks files and directories that share the same name and size (across all indexed disks) in amber.
 
 ## License
 
