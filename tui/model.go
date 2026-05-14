@@ -145,6 +145,7 @@ type Model struct {
 	showPanel     bool
 	panelFocused  bool
 	panelCursor   int
+	panelOffset   int             // index of first visible node in the panel viewport
 	panelExpanded map[string]bool // disk label → expanded; nil until first open
 
 	err error
@@ -455,7 +456,9 @@ func (m Model) togglePanel() (tea.Model, tea.Cmd) {
 				m.panelExpanded[disk] = true
 			}
 		}
+		m.panelOffset = 0
 		m.panelCursor = m.panelActiveIdx()
+		m.clampPanelCursor() // scrolls offset so active item is in view
 		return m, nil
 	}
 	// Panel is visible → always close it and return focus to search bar.
@@ -688,6 +691,27 @@ func (m *Model) clampPanelCursor() {
 	if len(nodes) > 0 && m.panelCursor >= len(nodes) {
 		m.panelCursor = len(nodes) - 1
 	}
+	// Keep cursor within the visible viewport.
+	visRows := m.visiblePanelRows()
+	if m.panelCursor < m.panelOffset {
+		m.panelOffset = m.panelCursor
+	}
+	if m.panelCursor >= m.panelOffset+visRows {
+		m.panelOffset = m.panelCursor - visRows + 1
+	}
+	if m.panelOffset < 0 {
+		m.panelOffset = 0
+	}
+}
+
+// visiblePanelRows returns how many node rows fit in the panel at the current terminal height.
+// The panel header occupies 2 lines (title + divider).
+func (m Model) visiblePanelRows() int {
+	v := m.height - 2
+	if v < 1 {
+		return 1
+	}
+	return v
 }
 
 // visibleRows returns how many result rows fit in the current terminal.
@@ -801,7 +825,20 @@ func (m Model) renderSidebar() string {
 
 	linesUsed := 2
 
-	for i, node := range nodes {
+	// Compute the visible window of nodes.
+	visRows := m.visiblePanelRows()
+	offset := m.panelOffset
+	if offset >= len(nodes) {
+		offset = max(0, len(nodes)-1)
+	}
+	end := offset + visRows
+	if end > len(nodes) {
+		end = len(nodes)
+	}
+
+	for i, node := range nodes[offset:end] {
+		globalIdx := offset + i
+
 		// Determine whether this node matches the active filter.
 		isActive := false
 		switch {
@@ -833,7 +870,7 @@ func (m Model) renderSidebar() string {
 		}
 		text = truncate(text, panelWidth)
 
-		isCursor := m.panelFocused && i == m.panelCursor
+		isCursor := m.panelFocused && globalIdx == m.panelCursor
 
 		var line string
 		switch {
