@@ -275,7 +275,7 @@ Searches use the indexes in `known_dbs`, and index runs write to `default_db`, t
 - column widths and order that are remembered between launches.
 
 It also manages indexes from the GUI:
-- index and reindex disks with live progress and Cancel;
+- index and reindex disks with live progress through each step (loading, indexing, removing deleted files, folder sizes), Cancel, and a list of anything that couldn't be read;
 - move a collection to another disk by dragging it onto the disk in the sidebar, or with **Move to** in its right-click menu. A move asks for confirmation and can be undone with ⌘Z;
 - add a collection to an existing disk without the disk plugged in (right-click the disk → **Add Collection…**), e.g. from a copy of the folder on the server;
 - rename and delete collections;
@@ -351,6 +351,7 @@ File paths in the index are stored as `DiskLabel/Collection/path/to/file`. This 
 - **Index format** — `.diskindex` files are standard SQLite databases. They can be opened with any SQLite tool.
 - **FTS5** — a full-text search virtual table on `(name, path)` powers fast text queries.
 - **Incremental detection** — files are compared by `(path, size, mtime)`. No hashing. A 5 TB disk with unchanged files reindexes in seconds.
+- **Unreadable folders** — if a folder can't be read (permissions, a failing drive), the run still completes. It reports the paths it couldn't read: at the end of CLI output, and in the app's Jobs list. Whatever was indexed under those folders before is **kept** rather than removed, because an error doesn't mean the files are gone. The next readable run brings them up to date.
 - **Directory sizes** — computed at the end of every index or reindex run by summing all non-directory file sizes beneath each directory. Re-indexing an existing disk populates sizes for directories that were previously recorded with a size of 0.
 - **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection. When indexing, a collection is matched by its folder location or, failing that, by name on the same disk. A collection moved from another disk, or first indexed from a copy elsewhere, is therefore updated in place rather than duplicated.
 - **Multi-DB search** — each `.diskindex` is queried independently; results are merged and sorted in memory.

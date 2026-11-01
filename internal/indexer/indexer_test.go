@@ -2,6 +2,7 @@ package indexer_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -516,4 +517,89 @@ func TestRun_RejectsDuplicateCollections(t *testing.T) {
 	disks, err := d.ListDisks()
 	require.NoError(t, err)
 	assert.Empty(t, disks, "nothing is written for a rejected run")
+}
+
+// A folder that can't be read is reported, and what was indexed under it
+// before is kept: an I/O or permission error doesn't mean the files are gone.
+func TestRun_UnreadableFolderIsReportedAndKept(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read anything")
+	}
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/ok.jpg":          "ok",
+		"Photos/locked/a.jpg":    "a",
+		"Photos/locked/sub/b.jp": "b",
+	})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	locked := filepath.Join(root, "Photos", "locked")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.ErrorCount)
+	require.Len(t, stats.Errors, 1)
+	assert.Equal(t, locked, stats.Errors[0].Path)
+	assert.Contains(t, stats.Errors[0].Err, "permission denied")
+	assert.Zero(t, stats.Deleted, "nothing under the unreadable folder is treated as deleted")
+
+	files, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/locked/a.jpg")
+	assert.Contains(t, files, "D/Photos/locked/sub/b.jp")
+
+	// Once readable again, a real deletion inside it is picked up.
+	require.NoError(t, os.Chmod(locked, 0o755))
+	require.NoError(t, os.Remove(filepath.Join(locked, "a.jpg")))
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+	assert.Zero(t, stats.ErrorCount)
+	assert.Equal(t, 1, stats.Deleted)
+}
+
+func TestRun_ReportsEveryPhase(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "root.txt": "r"})
+	var phases []string
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "D", MountPath: root, Force: true,
+		ProgressFn: func(u indexer.ProgressUpdate) {
+			if len(phases) == 0 || phases[len(phases)-1] != u.Phase {
+				phases = append(phases, u.Phase)
+			}
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"clearing", "loading", "indexing", "root", "deleting", "sizes"}, phases)
+}
+
+// An incremental run over unchanged files used to report nothing until the
+// end of each collection; progress now arrives as files are walked.
+func TestRun_ProgressDuringUnchangedFiles(t *testing.T) {
+	defer indexer.SetProgressInterval(0)()
+	d := openTestDB(t)
+	files := map[string]string{}
+	for i := 0; i < 50; i++ {
+		files[filepath.Join("Photos", fmt.Sprintf("f%02d.jpg", i))] = "x"
+	}
+	root := makeDisk(t, files)
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	var skippedSeen []int
+	stats, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "D", MountPath: root,
+		ProgressFn: func(u indexer.ProgressUpdate) {
+			if u.Phase == "indexing" {
+				skippedSeen = append(skippedSeen, u.Skipped)
+			}
+		},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added+stats.Updated)
+	assert.Greater(t, len(skippedSeen), 40, "a report per unchanged file when unthrottled")
+	assert.Equal(t, stats.Skipped, skippedSeen[len(skippedSeen)-1])
 }

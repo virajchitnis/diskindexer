@@ -132,5 +132,6 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Done in %s\n", stats.Elapsed.Round(1e6))
 	fmt.Printf("  Added: %d  Updated: %d  Deleted: %d  Unchanged: %d\n",
 		stats.Added, stats.Updated, stats.Deleted, stats.Skipped)
+	fmt.Print(formatPathErrors(stats, func(s string) string { return s }))
 	return nil
 }

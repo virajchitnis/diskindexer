@@ -62,13 +62,16 @@ struct JobRow: View {
                 }
                 HStack {
                     Text(job.phaseTitle)
-                        .foregroundStyle(job.state == .failed ? .red : .primary)
+                        .foregroundStyle(job.state == .failed ? .red : job.errorCount > 0 ? .orange : .primary)
                     Spacer()
                     Text(detail(now: ctx.date))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
                 .font(.caption)
+                if job.errorCount > 0 {
+                    UnreadablePaths(job: job)
+                }
                 if let err = job.error {
                     Text(err)
                         .font(.caption)
@@ -86,12 +89,54 @@ struct JobRow: View {
         }
         let elapsed = (job.finishedAt ?? now).timeIntervalSince(job.startedAt)
         var parts = ["\(Format.commas(Int64(job.processed))) files"]
-        if job.state == .running {
+        // Rate and time left only mean something while walking files.
+        if job.state == .running && job.progress.phase == "indexing" {
             let rate = Format.rate(processed: job.processed, elapsed: elapsed)
             if !rate.isEmpty { parts.append(rate) }
             let eta = Format.eta(processed: job.processed, total: job.progress.total, elapsed: elapsed)
             if !eta.isEmpty { parts.append(eta) }
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The paths a job couldn't read. While running, just the count; once done,
+/// an expandable list (the server keeps the first 50).
+struct UnreadablePaths: View {
+    var job: Job
+    @State private var expanded = false
+
+    var body: some View {
+        let n = job.errorCount
+        let noun = n == 1 ? "path" : "paths"
+        if job.state == .running {
+            Label("\(n) unreadable \(noun) so far", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else {
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(job.stats?.errors ?? [], id: \.self) { e in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(e.path).font(.caption.monospaced())
+                            Text(e.error).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .textSelection(.enabled)
+                    }
+                    let listed = job.stats?.errors?.count ?? 0
+                    if n > listed {
+                        Text("\u{2026} and \(n - listed) more").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text("What was indexed there before was kept.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("Couldn\u{2019}t read \(n) \(noun)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
     }
 }

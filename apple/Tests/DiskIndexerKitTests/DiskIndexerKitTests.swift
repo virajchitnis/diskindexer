@@ -92,4 +92,27 @@ struct DiskIndexerKitTests {
         #expect(CollectionDrag.parse("some dropped text") == nil)
         #expect(CollectionDrag.parse("diskindexer-collection:x@db") == nil)
     }
+
+    @Test func testJobErrorsAndPhases() throws {
+        // A finished job with unreadable paths, as the server sends it.
+        let done = try APIClient.decoder.decode(Job.self, from: Data(#"""
+        {"id":"j","state":"done","request":{"disk":"D","mountPath":"/m"},"startedAt":"2026-11-01T00:00:00Z","progress":{"phase":"sizes","added":0,"updated":0,"skipped":5,"total":8,"errors":1,"deleting":0,"dirsTotal":3,"dirsDone":3},"stats":{"added":0,"updated":0,"deleted":0,"skipped":5,"elapsedMs":1,"errorCount":1,"errors":[{"path":"/m/Photos/locked","error":"permission denied"}]}}
+        """#.utf8))
+        #expect(done.errorCount == 1)
+        #expect(done.phaseTitle == "Done, 1 unreadable")
+        #expect(done.stats?.errors?.first?.path == "/m/Photos/locked")
+
+        // An older server without the new fields still decodes.
+        var running = try APIClient.decoder.decode(Job.self, from: Data(#"""
+        {"id":"j","state":"running","request":{"disk":"D","mountPath":"/m"},"startedAt":"2026-11-01T00:00:00Z","progress":{"phase":"loading","added":0,"updated":0,"skipped":0,"total":0,"dirsTotal":0,"dirsDone":0}}
+        """#.utf8))
+        #expect(running.errorCount == 0)
+        #expect(running.phaseTitle == "Loading existing index")
+        #expect(running.fraction == nil)
+        running.progress.phase = "deleting"
+        running.progress.deleting = 1200
+        #expect(running.phaseTitle == "Removing 1,200 files no longer on disk")
+        running.progress.phase = "root"
+        #expect(running.phaseTitle == "Indexing files at the top of the disk")
+    }
 }

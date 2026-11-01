@@ -184,8 +184,7 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 				s.Error = err.Error()
 			default:
 				s.State = JobDone
-				s.Stats = &Stats{Added: stats.Added, Updated: stats.Updated, Deleted: stats.Deleted,
-					Skipped: stats.Skipped, ElapsedMs: float64(stats.Elapsed.Milliseconds())}
+				s.Stats = statsFromIndexer(stats)
 			}
 		})
 	}()

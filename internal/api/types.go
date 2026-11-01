@@ -100,8 +100,17 @@ type Progress struct {
 	Updated    int    `json:"updated"`
 	Skipped    int    `json:"skipped"`
 	Total      int    `json:"total"`
+	Errors     int    `json:"errors"`
+	Deleting   int    `json:"deleting"`
 	DirsTotal  int    `json:"dirsTotal"`
 	DirsDone   int    `json:"dirsDone"`
+}
+
+// PathError is a file or folder the indexer couldn't read. What was indexed
+// under it before is kept.
+type PathError struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 type Stats struct {
@@ -110,6 +119,9 @@ type Stats struct {
 	Deleted   int     `json:"deleted"`
 	Skipped   int     `json:"skipped"`
 	ElapsedMs float64 `json:"elapsedMs"`
+	// ErrorCount paths couldn't be read; Errors lists the first of them.
+	ErrorCount int         `json:"errorCount"`
+	Errors     []PathError `json:"errors,omitempty"`
 }
 
 type JobState string
@@ -165,6 +177,15 @@ func fileFromDB(dbPath string, f *db.File) File {
 
 func progressFromIndexer(u indexer.ProgressUpdate) Progress {
 	return Progress{Phase: u.Phase, Collection: u.Collection, Added: u.Added,
-		Updated: u.Updated, Skipped: u.Skipped, Total: u.Total,
-		DirsTotal: u.DirsTotal, DirsDone: u.DirsDone}
+		Updated: u.Updated, Skipped: u.Skipped, Total: u.Total, Errors: u.Errors,
+		Deleting: u.Deleting, DirsTotal: u.DirsTotal, DirsDone: u.DirsDone}
+}
+
+func statsFromIndexer(st *indexer.Stats) *Stats {
+	out := &Stats{Added: st.Added, Updated: st.Updated, Deleted: st.Deleted, Skipped: st.Skipped,
+		ElapsedMs: float64(st.Elapsed.Milliseconds()), ErrorCount: st.ErrorCount}
+	for _, e := range st.Errors {
+		out.Errors = append(out.Errors, PathError{Path: e.Path, Error: e.Err})
+	}
+	return out
 }

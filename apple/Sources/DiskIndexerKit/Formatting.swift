@@ -44,6 +44,9 @@ public enum Format {
 }
 
 public extension Job {
+    /// Paths that couldn't be read: the final count once done, else so far.
+    var errorCount: Int { stats?.errorCount ?? progress.errors ?? 0 }
+
     var processed: Int { progress.added + progress.updated + progress.skipped }
 
     /// 0...1 when the phase has a known total, nil for indeterminate.
@@ -60,13 +63,20 @@ public extension Job {
 
     var phaseTitle: String {
         switch state {
-        case .done: return "Done"
+        case .done:
+            let n = errorCount
+            return n == 0 ? "Done" : "Done, \(n) unreadable"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
         case .running:
             switch progress.phase {
+            case "loading": return "Loading existing index"
             case "clearing": return "Clearing old index"
             case "indexing": return progress.collection.map { "Indexing \($0)" } ?? "Indexing"
+            case "root": return "Indexing files at the top of the disk"
+            case "deleting":
+                let n = progress.deleting ?? 0
+                return n == 0 ? "Checking for removed files" : "Removing \(Format.commas(Int64(n))) files no longer on disk"
             case "sizes": return "Computing folder sizes"
             default: return "Starting"
             }

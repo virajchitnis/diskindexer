@@ -125,8 +125,19 @@ public struct Progress: Codable, Hashable, Sendable {
     public var updated: Int
     public var skipped: Int
     public var total: Int
+    /// Paths that couldn't be read so far. Optional: older servers omit it.
+    public var errors: Int?
+    /// Files being removed during the "deleting" phase.
+    public var deleting: Int?
     public var dirsTotal: Int
     public var dirsDone: Int
+}
+
+/// A file or folder the indexer couldn't read; what was indexed under it
+/// before is kept.
+public struct PathError: Codable, Hashable, Sendable {
+    public var path: String
+    public var error: String
 }
 
 public struct JobStats: Codable, Hashable, Sendable {
@@ -135,6 +146,8 @@ public struct JobStats: Codable, Hashable, Sendable {
     public var deleted: Int
     public var skipped: Int
     public var elapsedMs: Double
+    public var errorCount: Int?
+    public var errors: [PathError]?
 }
 
 public enum JobState: String, Codable, Sendable {

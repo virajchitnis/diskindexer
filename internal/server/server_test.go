@@ -336,3 +336,25 @@ func TestMoveCollection(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, h.do("PATCH", fmt.Sprintf("/v1/collections/%d", docs.ID), map[string]string{"label": "Music"}, nil))
 	assert.Equal(t, http.StatusConflict, h.do("POST", fmt.Sprintf("/v1/collections/%d/move", docs.ID), map[string]string{"disk": "Disk1"}, nil))
 }
+
+func TestJobReportsUnreadablePaths(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read anything")
+	}
+	h := newHarness(t, "")
+	root := makeDisk(t, map[string]string{"Photos/ok.jpg": "o", "Photos/locked/a.jpg": "a"})
+	require.Equal(t, api.JobDone, h.index(root).State)
+
+	locked := filepath.Join(root, "Photos", "locked")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	j := h.index(root)
+	require.Equal(t, api.JobDone, j.State, "unreadable folders don't fail the run")
+	require.NotNil(t, j.Stats)
+	assert.Equal(t, 1, j.Stats.ErrorCount)
+	require.Len(t, j.Stats.Errors, 1)
+	assert.Equal(t, locked, j.Stats.Errors[0].Path)
+	assert.Equal(t, 1, j.Progress.Errors)
+	assert.Zero(t, j.Stats.Deleted)
+}
