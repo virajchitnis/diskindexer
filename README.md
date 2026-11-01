@@ -16,6 +16,7 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
 - **Static binary** — no runtime dependencies; single binary for Linux and macOS
+- **macOS app** — a native SwiftUI app that indexes and searches on your Mac, or acts as the GUI for diskindexer running on a server (over SSH)
 
 ## Installation
 
@@ -45,7 +46,11 @@ The resulting binary is statically linked and requires no runtime dependencies o
 |---|---|
 | `make build` | Build for the current platform |
 | `make build-linux` | Cross-compile for Linux AMD64 |
-| `make test` | Run all tests |
+| `make test` | Run all Go tests |
+| `make test-apple` | Run the Swift tests for the macOS app |
+| `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
+| `make install` | Build for Linux and copy to the server |
+| `make install-service` | `install`, then set up and restart the `diskindexer serve` systemd user service on the server |
 | `make clean` | Remove build artifacts |
 
 ## Quick Start
@@ -221,6 +226,76 @@ Remove a collection and all its files from the index. The actual files on disk a
 diskindexer delete-collection --collection "Photos"
 diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 ```
+
+### `serve`
+
+Runs the JSON API that the macOS app talks to. You normally don't run this by hand: the app starts its own copy for local use, and `make install-service` sets it up as a service on a server.
+
+```bash
+diskindexer serve                                   # Unix socket at ~/.config/diskindexer/server.sock
+diskindexer serve --listen 127.0.0.1:7878 --token s3cret
+```
+
+| Flag | Description |
+|---|---|
+| `--listen` | `unix:/path/to.sock` or `host:port`; repeatable. Default: `unix:~/.config/diskindexer/server.sock` (mode 0600, so only your user can connect) |
+| `--token` | Require `Authorization: Bearer <token>` on every request (default `$DISKINDEXER_TOKEN`). Required for TCP listeners not on loopback |
+| `--db` | Index file to write to and search; repeatable, as for `search` |
+
+Searches use the indexes in `known_dbs`, and index runs write to `default_db`, the same as the CLI. Index runs happen inside the server, so they keep going if the app disconnects.
+
+## macOS App
+
+`DiskIndexer.app` is a native SwiftUI app with the same features as the TUI:
+- live search;
+- a disk/collection sidebar;
+- sortable columns;
+- duplicate highlighting;
+- a details inspector.
+
+It also manages indexes from the GUI:
+- index and reindex disks with live progress and Cancel;
+- rename and delete collections;
+- delete disks.
+
+The toolbar's connection menu switches between two modes:
+
+- **This Mac.** The app runs its bundled `diskindexer` in the background and uses your normal `~/.config/diskindexer` config and indexes.
+- **A server.** The app connects over SSH to `diskindexer serve` running on another machine, such as an Ubuntu box with your disks attached. You search that machine's indexes and start index runs there; Browse… shows the server's folders.
+
+### Build
+
+Building needs only the Xcode Command Line Tools (`xcode-select --install`), not full Xcode.
+
+```bash
+make mac-app
+open build/DiskIndexer.app
+```
+
+The app is ad-hoc signed. On a Mac other than the one that built it, open it the first time with right-click → Open.
+
+### Set up a server
+
+1. Install the binary and the systemd user service:
+
+   ```bash
+   make install-service
+   ```
+
+   To install by hand instead, copy `deploy/diskindexer.service` to `~/.config/systemd/user/` and run `systemctl --user enable --now diskindexer`.
+
+2. Once on the server, let the service run while you are logged out:
+
+   ```bash
+   sudo loginctl enable-linger $USER
+   ```
+
+3. In the app, choose **Add Server…** from the connection menu and enter the SSH host. A `~/.ssh/config` alias works.
+
+How the connection works:
+- The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server.
+- It can't answer password or host-key prompts, so `ssh <host>` must already work from Terminal without prompting.
+- If the connection drops, for example when the Mac sleeps, the app reconnects on its own. Index jobs keep running on the server, and their progress reappears once the app reconnects.
 
 ## TUI Controls
 

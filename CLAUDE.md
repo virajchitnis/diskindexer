@@ -16,7 +16,10 @@ make build               # build for current platform
 make build-linux         # cross-compile for Linux AMD64
 make build-darwin-arm64  # cross-compile for macOS Apple Silicon
 make build-darwin-amd64  # cross-compile for macOS Intel
-make install             # build-linux + scp to enterprise.virajchitnis.com
+make install             # build-linux + scp (via rename) to enterprise.virajchitnis.com
+make install-service     # install + systemd user service running `diskindexer serve`
+make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
+make test-apple          # Swift tests (uses CLT's swift-testing; no Xcode needed)
 make release             # build all three platform binaries + gh release create
 make test                # run all tests
 make clean               # remove build artifacts
@@ -48,13 +51,17 @@ cmd/                     # cobra commands (one file per command)
   disks.go               # disks list command
   collections.go         # collections list + rename commands
   search.go              # search command (launches TUI)
+  serve.go               # serve command: HTTP API for the GUI apps
 internal/
+  api/                   # JSON wire types + Service (search, manage, index jobs, fs browse)
+  server/                # net/http routes over api.Service, SSE job progress, bearer auth
   config/                # TOML config parsing (~/.config/diskindexer/config.toml)
   db/                    # SQLite schema, migrations, all DB operations
   indexer/               # filesystem walk, change detection, incremental logic
   search/                # query building, filter application, multi-DB merge
 tui/                     # bubbletea interactive TUI (model, styles, tests)
-testdata/                # synthetic file trees for integration tests
+apple/                   # SwiftPM package: DiskIndexerKit (shared, macOS+iOS) + DiskIndexerMac app
+deploy/                  # systemd user unit for `diskindexer serve`
 ```
 
 ## Key Design Decisions
@@ -66,6 +73,9 @@ testdata/                # synthetic file trees for integration tests
 - **Multi-DB search**: each `.diskindex` opened as a separate connection; results merged in Go before display.
 - **FTS5 virtual table** on `(name, path)` with triggers to stay in sync — powers fast text search.
 - **Directory sizes**: computed in Go at the end of every index run (`ComputeAndUpdateDirSizes`). All file rows are fetched in one query; sizes are accumulated in memory by walking each file's ancestor paths (O(N × depth)); collections are processed in parallel goroutines (disjoint subtrees); results are written back in sequential batched UPDATEs (200/tx) with progress callbacks. Replaces the previous O(N²) correlated SQL subquery.
+
+- **GUI architecture**: the Go binary is the only engine. `diskindexer serve` exposes `internal/api` as JSON over HTTP (`/v1/...`; bump `api.Version` on breaking changes). The macOS app always talks to that API: in local mode it launches its bundled binary with `--listen 127.0.0.1:0 --stdin-watch` and a random token; in remote mode it `ssh -L`-forwards a loopback port to the server's Unix socket. Index jobs run in the server (cancellable via `indexer.RunContext`) and each opens its own DB handle, so searches stay responsive during a run.
+- **Swift code layout**: anything needing `Process`/AppKit stays in `DiskIndexerMac`; `DiskIndexerKit` must stay iOS-compatible for the planned iPhone/iPad app (remote-only, SSH via Citadel, sideloaded with AltStore).
 
 ## Index File Location
 
@@ -94,6 +104,7 @@ diskindexer collections [--disk "Label"] [--db path]
 diskindexer rename-collection <new-label> --collection "Label" [--disk "Label"] [--db path]
 diskindexer delete-collection --collection "Label" [--disk "Label"] [--db path]
 diskindexer search [query] [--db path]... [--no-tui]
+diskindexer serve [--listen unix:/path|host:port]... [--token T] [--db path]...
 diskindexer --version
 ```
 

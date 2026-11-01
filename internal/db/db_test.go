@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -353,7 +354,7 @@ func TestComputeAndUpdateDirSizes_Basic(t *testing.T) {
 	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, "Test Disk/Photos/b.jpg", 2048, false)))
 
 	var progressCalls []int
-	err := d.ComputeAndUpdateDirSizes(disk.ID, func(done, _ int) {
+	err := d.ComputeAndUpdateDirSizes(context.Background(), disk.ID, func(done, _ int) {
 		progressCalls = append(progressCalls, done)
 	})
 	require.NoError(t, err)
@@ -374,14 +375,14 @@ func TestComputeAndUpdateDirSizes_NoDirs(t *testing.T) {
 	require.NoError(t, d.UpsertFile(makeFile(disk.ID, nil, "Test Disk/root.jpg", 500, false)))
 
 	// Should not error and should not panic.
-	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+	require.NoError(t, d.ComputeAndUpdateDirSizes(context.Background(), disk.ID, nil))
 }
 
 func TestComputeAndUpdateDirSizes_EmptyDisk(t *testing.T) {
 	d := openTestDB(t)
 	disk, _ := d.UpsertDisk("Test Disk", "")
 	// No files at all.
-	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+	require.NoError(t, d.ComputeAndUpdateDirSizes(context.Background(), disk.ID, nil))
 }
 
 func TestComputeAndUpdateDirSizes_NestedDirs(t *testing.T) {
@@ -404,7 +405,7 @@ func TestComputeAndUpdateDirSizes_NestedDirs(t *testing.T) {
 		require.NoError(t, d.UpsertFile(makeFile(disk.ID, &coll.ID, e.p, e.size, e.isDir)))
 	}
 
-	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+	require.NoError(t, d.ComputeAndUpdateDirSizes(context.Background(), disk.ID, nil))
 
 	fileMap, _ := d.GetFileMapForDisk(disk.ID)
 	assert.Equal(t, int64(100), fileMap["Test Disk/Work"].Size)
@@ -422,7 +423,7 @@ func TestComputeAndUpdateDirSizes_MultipleCollections(t *testing.T) {
 	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c2.ID, "Test Disk/Videos", 0, true)))
 	require.NoError(t, d.UpsertFile(makeFile(disk.ID, &c2.ID, "Test Disk/Videos/b.mp4", 2000, false)))
 
-	require.NoError(t, d.ComputeAndUpdateDirSizes(disk.ID, nil))
+	require.NoError(t, d.ComputeAndUpdateDirSizes(context.Background(), disk.ID, nil))
 
 	fileMap, _ := d.GetFileMapForDisk(disk.ID)
 	assert.Equal(t, int64(500), fileMap["Test Disk/Photos"].Size)

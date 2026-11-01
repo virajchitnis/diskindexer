@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -452,8 +453,9 @@ func computeDirSizes(files []dirSizeRow) map[int64]int64 {
 // resulting UPDATEs are written back to SQLite sequentially in batches of 200.
 //
 // progressFn is called after each batch with (done, total) directory counts.
-// Passing nil disables progress reporting.
-func (d *DB) ComputeAndUpdateDirSizes(diskID int64, progressFn func(done, total int)) error {
+// Passing nil disables progress reporting. Cancelling ctx stops the write-back
+// between batches and returns ctx.Err().
+func (d *DB) ComputeAndUpdateDirSizes(ctx context.Context, diskID int64, progressFn func(done, total int)) error {
 	files, err := d.fetchAllFilesForDisk(diskID)
 	if err != nil {
 		return fmt.Errorf("fetch files: %w", err)
@@ -509,6 +511,9 @@ func (d *DB) ComputeAndUpdateDirSizes(diskID int64, progressFn func(done, total 
 	const batchSize = 200
 	done := 0
 	for len(updates) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		batch := updates
 		if len(batch) > batchSize {
 			batch = updates[:batchSize]

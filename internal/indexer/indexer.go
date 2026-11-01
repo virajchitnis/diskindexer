@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -62,6 +63,13 @@ type ProgressUpdate struct {
 
 // Run indexes a disk, performing an incremental update unless Force is set.
 func Run(database *db.DB, opts Options) (*Stats, error) {
+	return RunContext(context.Background(), database, opts)
+}
+
+// RunContext is Run with cancellation. When ctx is cancelled the walk stops
+// at the next entry and ctx.Err() is returned; batches already committed are
+// kept, as with an interrupted CLI run.
+func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, error) {
 	start := time.Now()
 
 	disk, err := database.UpsertDisk(opts.DiskLabel, opts.Description)
@@ -116,13 +124,13 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 
 	for _, coll := range colls {
 		report("indexing", coll.Label, 0, 0)
-		if err := walkCollection(database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, totalEstimate, opts.Excludes, opts.ProgressFn); err != nil {
+		if err := walkCollection(ctx, database, disk.ID, coll, opts.DiskLabel, fileMap, seenPaths, stats, totalEstimate, opts.Excludes, opts.ProgressFn); err != nil {
 			return nil, fmt.Errorf("walk collection %q: %w", coll.Label, err)
 		}
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
 	}
 
-	if err := walkRoot(database, disk.ID, opts.MountPath, opts.DiskLabel, colls, fileMap, seenPaths, stats); err != nil {
+	if err := walkRoot(ctx, database, disk.ID, opts.MountPath, opts.DiskLabel, colls, fileMap, seenPaths, stats); err != nil {
 		return nil, fmt.Errorf("walk root: %w", err)
 	}
 
@@ -166,7 +174,7 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 			})
 		}
 	}
-	if err := database.ComputeAndUpdateDirSizes(disk.ID, sizesProgressFn); err != nil {
+	if err := database.ComputeAndUpdateDirSizes(ctx, disk.ID, sizesProgressFn); err != nil {
 		return nil, fmt.Errorf("update dir sizes: %w", err)
 	}
 
@@ -223,6 +231,7 @@ func resolveCollections(database *db.DB, diskID int64, opts Options) ([]*db.Coll
 // batched transactions. The tx variable is captured by the closure so that
 // batch commits can start a fresh transaction mid-walk.
 func walkCollection(
+	ctx context.Context,
 	database *db.DB,
 	diskID int64,
 	coll *db.Collection,
@@ -241,6 +250,9 @@ func walkCollection(
 	batchCount := 0
 
 	err = filepath.WalkDir(coll.RootPath, func(absPath string, d fs.DirEntry, entryErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if entryErr != nil {
 			fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", absPath, entryErr)
 			return nil
@@ -327,6 +339,7 @@ func walkCollection(
 
 // walkRoot indexes files sitting directly in the disk root (not inside any collection directory).
 func walkRoot(
+	ctx context.Context,
 	database *db.DB,
 	diskID int64,
 	mountPath string,
@@ -353,6 +366,9 @@ func walkRoot(
 	defer tx.Rollback() //nolint:errcheck
 
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		absPath := filepath.Join(mountPath, e.Name())
 		if _, isCollRoot := collRoots[absPath]; isCollRoot {
 			continue

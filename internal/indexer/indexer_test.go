@@ -1,6 +1,7 @@
 package indexer_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -390,4 +391,21 @@ func TestParseCollectionSpec(t *testing.T) {
 			assert.Equal(t, tc.path, spec.RootPath)
 		}
 	}
+}
+
+func TestRunContext_Cancelled(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg": "a",
+		"Photos/b.jpg": "b",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := indexer.RunContext(ctx, d, indexer.Options{DiskLabel: "Test Disk", MountPath: root})
+	require.ErrorIs(t, err, context.Canceled)
+
+	files, err := d.Search(db.SearchParams{Query: "jpg"})
+	require.NoError(t, err)
+	assert.Empty(t, files)
 }

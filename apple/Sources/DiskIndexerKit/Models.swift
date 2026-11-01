@@ -1,0 +1,169 @@
+import Foundation
+
+// Wire types mirroring internal/api/types.go. Field names match the JSON keys.
+
+public let supportedAPIVersion = 1
+
+public struct ServerInfo: Codable, Sendable {
+    public var apiVersion: Int
+    public var version: String
+    public var hostname: String
+    public var os: String
+    public var defaultDb: String
+    public var dbs: [String]
+}
+
+public struct Disk: Codable, Hashable, Sendable, Identifiable {
+    public var db: String
+    public var id: Int64
+    public var label: String
+    public var description: String
+    public var createdAt: Date
+    public var lastIndexedAt: Date?
+}
+
+public struct Collection: Codable, Hashable, Sendable, Identifiable {
+    public var db: String
+    public var id: Int64
+    public var diskLabel: String
+    public var label: String
+    public var rootPath: String
+    public var lastIndexedAt: Date?
+}
+
+public struct FileItem: Codable, Hashable, Sendable, Identifiable {
+    public var db: String
+    public var fileID: Int64
+    public var name: String
+    public var path: String
+    public var size: Int64
+    public var modifiedAt: Date
+    public var `extension`: String
+    public var isDir: Bool
+    public var diskLabel: String
+    public var collLabel: String
+
+    /// File IDs are only unique within one index, so qualify with the DB.
+    public var id: String { "\(db)#\(fileID)" }
+
+    /// Key used for duplicate highlighting, matching the TUI.
+    public var duplicateKey: String { "\(name)|\(size)" }
+
+    enum CodingKeys: String, CodingKey {
+        case db, fileID = "id", name, path, size, modifiedAt, `extension`, isDir, diskLabel, collLabel
+    }
+}
+
+public enum TypeFilter: String, Codable, CaseIterable, Sendable {
+    case all, files, dirs
+
+    public var title: String {
+        switch self {
+        case .all: "All"
+        case .files: "Files"
+        case .dirs: "Folders"
+        }
+    }
+}
+
+public struct SearchRequest: Codable, Sendable {
+    public var query: String
+    public var disk: String?
+    public var collection: String?
+    public var type: TypeFilter?
+    public var limit: Int?
+
+    public init(query: String, disk: String? = nil, collection: String? = nil, type: TypeFilter? = nil, limit: Int? = nil) {
+        self.query = query
+        self.disk = disk
+        self.collection = collection
+        self.type = type
+        self.limit = limit
+    }
+}
+
+public struct SearchResponse: Codable, Sendable {
+    public var results: [FileItem]
+    public var capped: Bool
+}
+
+public struct CollectionSpec: Codable, Hashable, Sendable, Identifiable {
+    public var label: String
+    public var rootPath: String
+    public var id: String { label + "\u{0}" + rootPath }
+
+    public init(label: String, rootPath: String) {
+        self.label = label
+        self.rootPath = rootPath
+    }
+}
+
+public struct IndexRequest: Codable, Hashable, Sendable {
+    public var db: String?
+    public var disk: String
+    public var description: String?
+    public var mountPath: String
+    public var collections: [CollectionSpec]?
+    public var excludes: [String]?
+    public var force: Bool?
+
+    public init(disk: String, mountPath: String, description: String? = nil,
+                collections: [CollectionSpec]? = nil, excludes: [String]? = nil, force: Bool? = nil) {
+        self.disk = disk
+        self.mountPath = mountPath
+        self.description = description
+        self.collections = collections
+        self.excludes = excludes
+        self.force = force
+    }
+}
+
+public struct Progress: Codable, Hashable, Sendable {
+    public var phase: String
+    public var collection: String?
+    public var added: Int
+    public var updated: Int
+    public var skipped: Int
+    public var total: Int
+    public var dirsTotal: Int
+    public var dirsDone: Int
+}
+
+public struct JobStats: Codable, Hashable, Sendable {
+    public var added: Int
+    public var updated: Int
+    public var deleted: Int
+    public var skipped: Int
+    public var elapsedMs: Double
+}
+
+public enum JobState: String, Codable, Sendable {
+    case running, done, failed, cancelled
+}
+
+public struct Job: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var state: JobState
+    public var request: IndexRequest
+    public var startedAt: Date
+    public var finishedAt: Date?
+    public var progress: Progress
+    public var stats: JobStats?
+    public var error: String?
+}
+
+public struct DirEntry: Codable, Hashable, Sendable, Identifiable {
+    public var name: String
+    public var path: String
+    public var id: String { path }
+}
+
+public struct DirListing: Codable, Sendable {
+    public var path: String
+    public var parent: String?
+    public var entries: [DirEntry]
+}
+
+struct ErrorBody: Codable {
+    var error: String
+}

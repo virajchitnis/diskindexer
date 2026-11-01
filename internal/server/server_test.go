@@ -1,0 +1,257 @@
+package server_test
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/viraj/diskindexer/internal/api"
+	"github.com/viraj/diskindexer/internal/server"
+)
+
+type harness struct {
+	t     *testing.T
+	srv   *httptest.Server
+	token string
+}
+
+func newHarness(t *testing.T, token string) *harness {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.diskindex")
+	svc, err := api.NewService("test", dbPath, nil)
+	require.NoError(t, err)
+	srv := httptest.NewServer(server.New(svc, token))
+	t.Cleanup(func() {
+		srv.Close()
+		svc.Close()
+	})
+	return &harness{t: t, srv: srv, token: token}
+}
+
+func (h *harness) do(method, path string, body any, out any) int {
+	h.t.Helper()
+	var rd *bytes.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		require.NoError(h.t, err)
+		rd = bytes.NewReader(b)
+	} else {
+		rd = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequest(method, h.srv.URL+path, rd)
+	require.NoError(h.t, err)
+	if h.token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(h.t, err)
+	defer resp.Body.Close()
+	if out != nil && resp.StatusCode < 300 && resp.StatusCode != http.StatusNoContent {
+		require.NoError(h.t, json.NewDecoder(resp.Body).Decode(out))
+	}
+	return resp.StatusCode
+}
+
+func makeDisk(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, content := range files {
+		p := filepath.Join(root, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0644))
+	}
+	return root
+}
+
+// waitJob polls until the job leaves the running state.
+func (h *harness) waitJob(id string) api.Job {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var j api.Job
+		require.Equal(h.t, http.StatusOK, h.do("GET", "/v1/jobs/"+id, nil, &j))
+		if j.State != api.JobRunning {
+			return j
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.t.Fatalf("job %s did not finish", id)
+	return api.Job{}
+}
+
+func (h *harness) index(root string) api.Job {
+	h.t.Helper()
+	var j api.Job
+	require.Equal(h.t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Disk1", MountPath: root}, &j))
+	return h.waitJob(j.ID)
+}
+
+func TestInfo(t *testing.T) {
+	h := newHarness(t, "")
+	var info api.Info
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/info", nil, &info))
+	assert.Equal(t, api.Version, info.APIVersion)
+	assert.Equal(t, "test", info.Version)
+	assert.Len(t, info.DBs, 1)
+}
+
+func TestIndexSearchAndManage(t *testing.T) {
+	h := newHarness(t, "")
+	root := makeDisk(t, map[string]string{
+		"Photos/beach.jpg": "aaaa",
+		"Photos/hotel.jpg": "bb",
+		"Work/report.pdf":  "cccccc",
+	})
+
+	j := h.index(root)
+	require.Equal(t, api.JobDone, j.State, j.Error)
+	require.NotNil(t, j.Stats)
+	assert.Greater(t, j.Stats.Added, 0)
+
+	var disks []api.Disk
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/disks", nil, &disks))
+	require.Len(t, disks, 1)
+	assert.Equal(t, "Disk1", disks[0].Label)
+
+	var res api.SearchResponse
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "jpg", Type: "files"}, &res))
+	assert.Len(t, res.Results, 2)
+	assert.False(t, res.Capped)
+
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Type: "files", Limit: 1}, &res))
+	assert.Len(t, res.Results, 1)
+	assert.True(t, res.Capped)
+
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/search", api.SearchRequest{Type: "bogus"}, nil))
+
+	var colls []api.Collection
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/collections?disk=Disk1", nil, &colls))
+	require.Len(t, colls, 2)
+	var photos api.Collection
+	for _, c := range colls {
+		if c.Label == "Photos" {
+			photos = c
+		}
+	}
+	require.NotZero(t, photos.ID)
+
+	assert.Equal(t, http.StatusNoContent, h.do("PATCH", fmt.Sprintf("/v1/collections/%d", photos.ID),
+		map[string]string{"label": "Pictures"}, nil))
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Collection: "Pictures", Type: "files"}, &res))
+	assert.Len(t, res.Results, 2)
+
+	assert.Equal(t, http.StatusNoContent, h.do("DELETE", fmt.Sprintf("/v1/collections/%d", photos.ID), nil, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("DELETE", fmt.Sprintf("/v1/collections/%d", photos.ID), nil, nil))
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "jpg"}, &res))
+	assert.Empty(t, res.Results)
+
+	assert.Equal(t, http.StatusBadRequest, h.do("DELETE", "/v1/collections/1?db=/etc/passwd", nil, nil))
+
+	assert.Equal(t, http.StatusNoContent, h.do("DELETE", "/v1/disks/Disk1", nil, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("DELETE", "/v1/disks/Disk1", nil, nil))
+}
+
+func TestStartIndexValidation(t *testing.T) {
+	h := newHarness(t, "")
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{MountPath: t.TempDir()}, nil))
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "D", MountPath: "/does/not/exist"}, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("GET", "/v1/jobs/nope", nil, nil))
+}
+
+// A large tree keeps the first job running long enough to test the conflict,
+// the progress stream, and cancellation.
+func bigDisk(t *testing.T) string {
+	files := map[string]string{}
+	for i := 0; i < 3000; i++ {
+		files[fmt.Sprintf("Coll%d/dir%d/file%d.txt", i%3, i%50, i)] = "x"
+	}
+	return makeDisk(t, files)
+}
+
+func TestJobEventsConflictAndCancel(t *testing.T) {
+	h := newHarness(t, "")
+	root := bigDisk(t)
+
+	var j api.Job
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Big", MountPath: root}, &j))
+	assert.Equal(t, http.StatusConflict, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Big", MountPath: root}, nil))
+
+	var cancelled api.Job
+	require.Equal(t, http.StatusOK, h.do("DELETE", "/v1/jobs/"+j.ID, nil, &cancelled))
+	assert.Contains(t, []api.JobState{api.JobCancelled, api.JobDone}, cancelled.State)
+
+	// After the first job stops, a new run is allowed and streams to "done".
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Big", MountPath: root}, &j))
+	resp, err := http.Get(h.srv.URL + "/v1/jobs/" + j.ID + "/events")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	var events []string
+	var last api.Job
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		if ev, ok := strings.CutPrefix(line, "event: "); ok {
+			events = append(events, ev)
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			require.NoError(t, json.Unmarshal([]byte(data), &last))
+		}
+	}
+	require.NotEmpty(t, events)
+	assert.Equal(t, "done", events[len(events)-1])
+	assert.Equal(t, api.JobDone, last.State, last.Error)
+
+	var jobs []api.Job
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/jobs", nil, &jobs))
+	assert.Len(t, jobs, 2)
+}
+
+func TestSearchDuringIndex(t *testing.T) {
+	h := newHarness(t, "")
+	var j api.Job
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Big", MountPath: bigDisk(t)}, &j))
+	var res api.SearchResponse
+	assert.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "file1"}, &res))
+	h.waitJob(j.ID)
+}
+
+func TestAuth(t *testing.T) {
+	h := newHarness(t, "s3cret")
+	var info api.Info
+	assert.Equal(t, http.StatusOK, h.do("GET", "/v1/info", nil, &info))
+
+	resp, err := http.Get(h.srv.URL + "/v1/info")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestFSList(t *testing.T) {
+	h := newHarness(t, "")
+	root := makeDisk(t, map[string]string{"b/x": "1", "A/y": "1", ".hidden/z": "1", "file.txt": "1"})
+	var listing api.DirListing
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/fs/list?path="+root, nil, &listing))
+	require.Len(t, listing.Entries, 2)
+	assert.Equal(t, "A", listing.Entries[0].Name)
+	assert.Equal(t, "b", listing.Entries[1].Name)
+	assert.Equal(t, filepath.Dir(root), listing.Parent)
+
+	assert.Equal(t, http.StatusBadRequest, h.do("GET", "/v1/fs/list?path=relative", nil, nil))
+
+	var roots []api.DirEntry
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/fs/roots", nil, &roots))
+	assert.NotEmpty(t, roots)
+}

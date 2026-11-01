@@ -11,3 +11,7 @@ diskindexer-*
 
 # macOS
 .DS_Store
+
+# Swift / app bundle build output
+apple/.build/
+build/
