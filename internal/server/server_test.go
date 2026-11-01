@@ -73,10 +73,12 @@ func makeDisk(t *testing.T, files map[string]string) string {
 	return root
 }
 
-// waitJob polls until the job leaves the running state.
+// waitJob polls until the job leaves the running state. The deadline only
+// guards against a hung job: the 3000-file tree takes ~6s under -race on a
+// laptop and longer on shared CI runners.
 func (h *harness) waitJob(id string) api.Job {
 	h.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var j api.Job
 		require.Equal(h.t, http.StatusOK, h.do("GET", "/v1/jobs/"+id, nil, &j))
