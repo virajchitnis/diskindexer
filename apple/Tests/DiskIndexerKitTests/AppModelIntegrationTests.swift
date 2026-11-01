@@ -240,6 +240,44 @@ struct AppModelIntegrationTests {
         #expect(model.results.count == 9)
     }
 
+    @Test func moveCollectionBetweenDisksAndBack() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+        try await model.startIndex(IndexRequest(disk: "Disk2", mountPath: try makeDisk(["Docs/d.txt": "d"])))
+        #expect(await eventually { model.diskNodes.count == 2 })
+
+        let movies = try #require(model.diskNodes[0].collections.first { $0.label == "Movies" })
+        #expect(model.moveTargets(for: movies) == ["Disk2"])
+        #expect(model.collection(db: movies.db, id: movies.id) == movies)
+
+        model.sidebarSelection = .collection(disk: "Disk1", collection: "Movies")
+        let moved = try #require(await model.moveCollection(movies, toDisk: "Disk2"))
+        #expect(moved.id == movies.id && moved.diskLabel == "Disk2")
+        #expect(model.actionError == nil)
+        // The filter follows the collection to its new disk.
+        #expect(model.sidebarSelection == .collection(disk: "Disk2", collection: "Movies"))
+        #expect(model.diskNodes.map { $0.collections.map(\.label) } == [["Backup", "Music"], ["Docs", "Movies"]])
+        #expect(await eventually { model.results.map(\.path).sorted() == ["Disk2/Movies", "Disk2/Movies/a.mkv", "Disk2/Movies/b.mkv"] })
+
+        // Moving back (what Undo does) restores the original paths.
+        let back = try #require(await model.moveCollection(moved, toDisk: "Disk1"))
+        #expect(back.diskLabel == "Disk1")
+        #expect(model.sidebarSelection == .collection(disk: "Disk1", collection: "Movies"))
+        #expect(await eventually { model.results.map(\.path).sorted() == ["Disk1/Movies", "Disk1/Movies/a.mkv", "Disk1/Movies/b.mkv"] })
+    }
+
+    @Test func moveCollectionConflictReportsError() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+        try await model.startIndex(IndexRequest(disk: "Disk2", mountPath: try makeDisk(["Music/y.flac": "y"])))
+        #expect(await eventually { model.diskNodes.count == 2 })
+
+        let music = try #require(model.diskNodes[0].collections.first { $0.label == "Music" })
+        #expect(await model.moveCollection(music, toDisk: "Disk2") == nil)
+        #expect(model.actionError?.contains("already has a collection named") == true)
+        #expect(model.diskNodes[0].collections.contains { $0.label == "Music" })
+    }
+
     @Test func reconnectsAfterServerDies() async throws {
         let (model, transport) = try await connectedModel()
         defer { model.disconnect() }

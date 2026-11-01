@@ -460,3 +460,35 @@ func TestRun_NoMountPathNoCollections(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, disks, "a rejected run must not create the disk")
 }
+
+// Move a collection to another disk in the index, then reindex that disk
+// from its real mount: the moved collection is updated in place, not
+// duplicated, and nothing is re-added.
+func TestRun_ReindexAfterMoveDoesNotDuplicate(t *testing.T) {
+	d := openTestDB(t)
+	diskA := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Photos/b.jpg": "b"})
+	diskB := makeDisk(t, map[string]string{"Music/song.flac": "s"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: diskA})
+	require.NoError(t, err)
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "B", MountPath: diskB})
+	require.NoError(t, err)
+
+	// The folder physically moves from A to B...
+	require.NoError(t, os.Rename(filepath.Join(diskA, "Photos"), filepath.Join(diskB, "Photos")))
+	// ...and is moved in the index without reading it again.
+	photos, err := d.GetCollectionsByLabel("Photos", "A")
+	require.NoError(t, err)
+	b, err := d.GetDiskByLabel("B")
+	require.NoError(t, err)
+	_, err = d.MoveCollection(photos[0].ID, b.ID)
+	require.NoError(t, err)
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "B", MountPath: diskB})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	colls, err := d.ListCollections(b.ID)
+	require.NoError(t, err)
+	assert.Len(t, colls, 2)
+}

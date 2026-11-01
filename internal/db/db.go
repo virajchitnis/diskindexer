@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -114,8 +115,40 @@ func (d *DB) UpdateDiskIndexedAt(diskID int64, t time.Time) error {
 
 // ── Collections ───────────────────────────────────────────────────────────────
 
+// UpsertCollection finds or creates the collection for (diskID, rootPath).
+// A collection is matched by its root path first; failing that, by label on
+// the same disk, so a collection that was moved here from another disk, or
+// indexed before from a different folder (e.g. a copy on a server), is
+// updated in place instead of duplicated. Its root path then becomes rootPath.
 func (d *DB) UpsertCollection(diskID int64, label, rootPath string) (*Collection, error) {
-	_, err := d.sql.Exec(`
+	existing, err := d.GetCollectionByPath(diskID, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		var ids []int64
+		rows, err := d.sql.Query(`SELECT id FROM collections WHERE disk_id = ? AND label = ?`, diskID, label)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		// Only adopt an unambiguous match.
+		if len(ids) == 1 {
+			if _, err := d.sql.Exec(`UPDATE collections SET root_path = ? WHERE id = ?`, rootPath, ids[0]); err != nil {
+				return nil, err
+			}
+			return d.GetCollectionByPath(diskID, rootPath)
+		}
+	}
+	_, err = d.sql.Exec(`
 		INSERT INTO collections (disk_id, label, root_path)
 		VALUES (?, ?, ?)
 		ON CONFLICT(disk_id, root_path) DO UPDATE SET label = excluded.label
@@ -124,6 +157,99 @@ func (d *DB) UpsertCollection(diskID int64, label, rootPath string) (*Collection
 		return nil, err
 	}
 	return d.GetCollectionByPath(diskID, rootPath)
+}
+
+func (d *DB) GetCollectionByID(id int64) (*Collection, error) {
+	row := d.sql.QueryRow(`
+		SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+		FROM collections c JOIN disks d ON c.disk_id = d.id
+		WHERE c.id = ?
+	`, id)
+	return scanCollection(row)
+}
+
+// ErrConflict reports that an operation would collide with existing data.
+var ErrConflict = errors.New("conflict")
+
+// MoveCollection reassigns a collection and all its files to another disk in
+// the same index, without re-reading anything from disk. Each file path's
+// leading disk label is swapped for the target's; the rest of the path is
+// kept as stored. The FTS index follows via its update trigger, and folder
+// sizes are unaffected since they are totals within the collection.
+//
+// The collection's root path is moved under the target disk's mount point
+// when that can be inferred (the target's collections share one parent), so a
+// later reindex of the target matches it; otherwise it is left as is, and the
+// reindex matches the collection by label instead.
+//
+// Returns nil if the collection doesn't exist, and ErrConflict if the target
+// disk already has a collection with the same label or a file at a path the
+// move would produce. Moving to the collection's own disk is a no-op.
+func (d *DB) MoveCollection(id, targetDiskID int64) (*Collection, error) {
+	coll, err := d.GetCollectionByID(id)
+	if err != nil || coll == nil {
+		return nil, err
+	}
+	if coll.DiskID == targetDiskID {
+		return coll, nil
+	}
+	var targetLabel string
+	if err := d.sql.QueryRow(`SELECT label FROM disks WHERE id = ?`, targetDiskID).Scan(&targetLabel); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("target disk %d not found", targetDiskID)
+		}
+		return nil, err
+	}
+	targetColls, err := d.ListCollections(targetDiskID)
+	if err != nil {
+		return nil, err
+	}
+	parents := map[string]struct{}{}
+	for _, c := range targetColls {
+		if c.Label == coll.Label {
+			return nil, fmt.Errorf("%w: disk %q already has a collection named %q", ErrConflict, targetLabel, coll.Label)
+		}
+		parents[filepath.Dir(c.RootPath)] = struct{}{}
+	}
+	newRoot := coll.RootPath
+	if len(parents) == 1 {
+		for p := range parents {
+			newRoot = filepath.Join(p, filepath.Base(coll.RootPath))
+		}
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Files are "<disk>/<...>"; swap only the leading disk label.
+	oldPrefix := coll.DiskLabel + "/"
+	if _, err := tx.Exec(`
+		UPDATE files
+		SET disk_id = ?, path = ? || substr(path, length(?) + 1)
+		WHERE collection_id = ? AND substr(path, 1, length(?)) = ?
+	`, targetDiskID, targetLabel+"/", oldPrefix, id, oldPrefix, oldPrefix); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has files at the paths this collection would move to", ErrConflict, targetLabel)
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE collections SET disk_id = ?, root_path = ? WHERE id = ?`, targetDiskID, newRoot, id); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has a collection at %s", ErrConflict, targetLabel, newRoot)
+		}
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetCollectionByID(id)
+}
+
+func isUniqueViolation(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 func (d *DB) GetCollectionByPath(diskID int64, rootPath string) (*Collection, error) {

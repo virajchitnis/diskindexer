@@ -259,6 +259,39 @@ public final class AppModel {
         scheduleSearch(debounce: false)
     }
 
+    /// Disks a collection can be moved to: others in the same index file.
+    public func moveTargets(for c: Collection) -> [String] {
+        diskNodes
+            .filter { $0.label != c.diskLabel && $0.disks.contains { $0.db == c.db } }
+            .map(\.label)
+    }
+
+    /// Finds a collection in the sidebar by its index file and ID.
+    public func collection(db: String, id: Int64) -> Collection? {
+        diskNodes.lazy.flatMap(\.collections).first { $0.db == db && $0.id == id }
+    }
+
+    /// Moves a collection to another disk without reindexing. Returns the
+    /// collection as it is after the move, or nil (with actionError set) if
+    /// the server refused, e.g. because the target has the same name already.
+    @discardableResult
+    public func moveCollection(_ c: Collection, toDisk disk: String) async -> Collection? {
+        guard let client else { return nil }
+        var moved: Collection?
+        do {
+            moved = try await client.moveCollection(c, toDisk: disk)
+            // Follow the move before refreshing, as with rename.
+            if case .collection(c.diskLabel, c.label) = sidebarSelection {
+                sidebarSelection = .collection(disk: disk, collection: c.label)
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await refreshMetadata()
+        scheduleSearch(debounce: false)
+        return moved
+    }
+
     public func deleteCollection(_ c: Collection) async {
         await perform { try await $0.deleteCollection(c) }
     }

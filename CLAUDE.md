@@ -107,6 +107,7 @@ diskindexer delete-disk --disk "Label" [--db path]
 diskindexer collections [--disk "Label"] [--db path]
 diskindexer rename-collection <new-label> --collection "Label" [--disk "Label"] [--db path]
 diskindexer delete-collection --collection "Label" [--disk "Label"] [--db path]
+diskindexer move-collection --collection "Label" [--disk "Label"] --to "Label" [--db path]
 diskindexer search [query] [--db path]... [--no-tui]
 diskindexer serve [--listen unix:/path|host:port]... [--token T] [--db path]...
 diskindexer --version
@@ -147,6 +148,7 @@ When a directory is selected in the TUI, allow the user to "enter" it and view i
 - **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
 - **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
 - **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
+- **Moving collections**: `db.MoveCollection` rewrites only each path's leading disk label (renames don't rewrite paths, so the label part may be stale until a reindex) and the collection's disk; the FTS update trigger keeps search in sync. Same `.diskindex` only. `UpsertCollection` falls back to matching by (disk, label) when the root path is new, so reindexing after a move or after indexing from a copy updates the collection instead of duplicating it.
 - **No mount path**: with `--collection` and no mount path, `walkRoot` is skipped and the disk's root-level files (no collection) are never deleted; unlisted collections are preserved as always. This backs the app's "Add Collection…" for disks that aren't plugged in.
 - **Install target**: `make install` cross-compiles for Linux AMD64 and deploys to `~/.local/bin/diskindexer` on `enterprise.virajchitnis.com` via `scp`.
 

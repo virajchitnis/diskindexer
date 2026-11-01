@@ -430,3 +430,159 @@ func TestComputeAndUpdateDirSizes_MultipleCollections(t *testing.T) {
 	assert.Equal(t, int64(2000), fileMap["Test Disk/Videos"].Size)
 }
 
+
+// ── MoveCollection tests ──────────────────────────────────────────────────────
+
+// seedTwoDisks creates "Disk A" with a Photos collection (root dir, a file,
+// and a nested file) and an empty "Disk B" with one Music collection, both
+// with collection roots under a common mount point.
+func seedTwoDisks(t *testing.T, d *db.DB) (photos *db.Collection, diskB *db.Disk) {
+	t.Helper()
+	diskA, err := d.UpsertDisk("Disk A", "")
+	require.NoError(t, err)
+	diskB, err = d.UpsertDisk("Disk B", "")
+	require.NoError(t, err)
+	photos, err = d.UpsertCollection(diskA.ID, "Photos", "/media/a/Photos")
+	require.NoError(t, err)
+	_, err = d.UpsertCollection(diskB.ID, "Music", "/media/b/Music")
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, f := range []*db.File{
+		{DiskID: diskA.ID, CollectionID: &photos.ID, Name: "Photos", Path: "Disk A/Photos", IsDir: true, Size: 7, ModifiedAt: now},
+		{DiskID: diskA.ID, CollectionID: &photos.ID, Name: "beach.jpg", Path: "Disk A/Photos/beach.jpg", Size: 3, ModifiedAt: now, Extension: "jpg"},
+		{DiskID: diskA.ID, CollectionID: &photos.ID, Name: "x.jpg", Path: "Disk A/Photos/2019/x.jpg", Size: 4, ModifiedAt: now, Extension: "jpg"},
+		{DiskID: diskA.ID, Name: "root.txt", Path: "Disk A/root.txt", Size: 1, ModifiedAt: now},
+	} {
+		require.NoError(t, d.UpsertFile(f))
+	}
+	return photos, diskB
+}
+
+func TestMoveCollection(t *testing.T) {
+	d := openTestDB(t)
+	photos, diskB := seedTwoDisks(t, d)
+
+	moved, err := d.MoveCollection(photos.ID, diskB.ID)
+	require.NoError(t, err)
+	require.NotNil(t, moved)
+	assert.Equal(t, photos.ID, moved.ID)
+	assert.Equal(t, "Disk B", moved.DiskLabel)
+	assert.Equal(t, "/media/b/Photos", moved.RootPath, "root follows the target's mount point")
+
+	files, err := d.GetFileMapForDisk(diskB.ID)
+	require.NoError(t, err)
+	for _, p := range []string{"Disk B/Photos", "Disk B/Photos/beach.jpg", "Disk B/Photos/2019/x.jpg"} {
+		assert.Contains(t, files, p)
+	}
+	assert.Equal(t, int64(7), files["Disk B/Photos"].Size, "folder sizes are kept")
+
+	// Disk A keeps only its root file.
+	files, err = d.GetFileMapForDisk(photos.DiskID)
+	require.NoError(t, err)
+	assert.Len(t, files, 1)
+	assert.Contains(t, files, "Disk A/root.txt")
+
+	// Search (FTS) sees the new paths, and filtering by the new disk works.
+	res, err := d.Search(db.SearchParams{Query: "beach", DiskLabel: "Disk B"})
+	require.NoError(t, err)
+	require.Len(t, res, 1)
+	assert.Equal(t, "Disk B/Photos/beach.jpg", res[0].Path)
+	res, err = d.Search(db.SearchParams{Query: "beach", DiskLabel: "Disk A"})
+	require.NoError(t, err)
+	assert.Empty(t, res)
+
+	// Moving back restores the original paths.
+	back, err := d.MoveCollection(photos.ID, photos.DiskID)
+	require.NoError(t, err)
+	assert.Equal(t, "Disk A", back.DiskLabel)
+	files, err = d.GetFileMapForDisk(photos.DiskID)
+	require.NoError(t, err)
+	assert.Contains(t, files, "Disk A/Photos/2019/x.jpg")
+}
+
+func TestMoveCollection_Conflicts(t *testing.T) {
+	d := openTestDB(t)
+	photos, diskB := seedTwoDisks(t, d)
+
+	_, err := d.UpsertCollection(diskB.ID, "Photos", "/elsewhere/Photos")
+	require.NoError(t, err)
+	_, err = d.MoveCollection(photos.ID, diskB.ID)
+	require.ErrorIs(t, err, db.ErrConflict)
+	assert.Contains(t, err.Error(), "already has a collection named")
+
+	// Nothing moved.
+	files, err := d.GetFileMapForDisk(photos.DiskID)
+	require.NoError(t, err)
+	assert.Len(t, files, 4)
+}
+
+func TestMoveCollection_PathCollision(t *testing.T) {
+	d := openTestDB(t)
+	photos, diskB := seedTwoDisks(t, d)
+	// A root-level file on Disk B at the path the collection's root dir would take.
+	require.NoError(t, d.UpsertFile(&db.File{DiskID: diskB.ID, Name: "Photos", Path: "Disk B/Photos", ModifiedAt: time.Now()}))
+
+	_, err := d.MoveCollection(photos.ID, diskB.ID)
+	require.ErrorIs(t, err, db.ErrConflict)
+	// The transaction rolled back: the collection is still on Disk A.
+	c, err := d.GetCollectionByID(photos.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Disk A", c.DiskLabel)
+	files, err := d.GetFileMapForDisk(photos.DiskID)
+	require.NoError(t, err)
+	assert.Len(t, files, 4)
+}
+
+func TestMoveCollection_NoOpAndMissing(t *testing.T) {
+	d := openTestDB(t)
+	photos, _ := seedTwoDisks(t, d)
+
+	same, err := d.MoveCollection(photos.ID, photos.DiskID)
+	require.NoError(t, err)
+	assert.Equal(t, "/media/a/Photos", same.RootPath)
+
+	missing, err := d.MoveCollection(9999, photos.DiskID)
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+
+	_, err = d.MoveCollection(photos.ID, 9999)
+	require.Error(t, err)
+}
+
+func TestMoveCollection_KeepsRootWhenTargetMountUnknown(t *testing.T) {
+	d := openTestDB(t)
+	photos, err := func() (*db.Collection, error) {
+		a, _ := d.UpsertDisk("Disk A", "")
+		return d.UpsertCollection(a.ID, "Photos", "/media/a/Photos")
+	}()
+	require.NoError(t, err)
+	empty, err := d.UpsertDisk("Empty", "")
+	require.NoError(t, err)
+
+	moved, err := d.MoveCollection(photos.ID, empty.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "/media/a/Photos", moved.RootPath)
+}
+
+func TestUpsertCollection_MatchesByLabel(t *testing.T) {
+	d := openTestDB(t)
+	disk, err := d.UpsertDisk("Disk", "")
+	require.NoError(t, err)
+	orig, err := d.UpsertCollection(disk.ID, "Photos", "/srv/copy/Photos")
+	require.NoError(t, err)
+
+	// Same label from a different folder adopts the existing collection.
+	again, err := d.UpsertCollection(disk.ID, "Photos", "/media/disk/Photos")
+	require.NoError(t, err)
+	assert.Equal(t, orig.ID, again.ID)
+	assert.Equal(t, "/media/disk/Photos", again.RootPath)
+
+	colls, err := d.ListCollections(disk.ID)
+	require.NoError(t, err)
+	assert.Len(t, colls, 1)
+
+	// A different label is still a new collection.
+	other, err := d.UpsertCollection(disk.ID, "Music", "/media/disk/Music")
+	require.NoError(t, err)
+	assert.NotEqual(t, orig.ID, other.ID)
+}

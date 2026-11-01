@@ -30,6 +30,7 @@ func New(svc *api.Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/collections", h.collections)
 	mux.HandleFunc("PATCH /v1/collections/{id}", h.renameCollection)
 	mux.HandleFunc("DELETE /v1/collections/{id}", h.deleteCollection)
+	mux.HandleFunc("POST /v1/collections/{id}/move", h.moveCollection)
 	mux.HandleFunc("POST /v1/search", h.search)
 	mux.HandleFunc("GET /v1/jobs", h.jobs)
 	mux.HandleFunc("POST /v1/jobs", h.startJob)
@@ -141,6 +142,28 @@ func (h *handlers) renameCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handlers) moveCollection(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var body struct {
+		DB   string `json:"db"`
+		Disk string `json:"disk"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	coll, err := h.svc.MoveCollection(body.DB, id, body.Disk)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, coll)
 }
 
 func (h *handlers) deleteCollection(w http.ResponseWriter, r *http.Request) {

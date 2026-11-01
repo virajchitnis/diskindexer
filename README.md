@@ -234,6 +234,19 @@ diskindexer delete-collection --collection "Photos"
 diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 ```
 
+### `move-collection`
+
+Move a collection and all its files to another disk in the index, after you've physically moved the folder. Nothing is read from either disk, so it takes seconds even for very large collections.
+
+```bash
+diskindexer move-collection --collection "Photos" --disk "Disk One" --to "Seagate PB A"
+```
+
+- Each path's disk name is swapped (`Disk One/Photos/…` becomes `Seagate PB A/Photos/…`); the rest is kept as indexed.
+- The collection's saved folder location moves under the target disk's mount point when it can be worked out, so a later reindex of the target updates the collection instead of re-adding it.
+- Both disks must be in the same index file. The move is refused if the target already has a collection with that name.
+- Reindex the target disk afterwards to pick up any other changes.
+
 ### `serve`
 
 Runs the JSON API that the macOS app talks to. You normally don't run this by hand: the app starts its own copy for local use, and `make install-service` sets it up as a service on a server.
@@ -262,6 +275,7 @@ Searches use the indexes in `known_dbs`, and index runs write to `default_db`, t
 
 It also manages indexes from the GUI:
 - index and reindex disks with live progress and Cancel;
+- move a collection to another disk by dragging it onto the disk in the sidebar, or with **Move to** in its right-click menu. A move asks for confirmation and can be undone with ⌘Z;
 - add a collection to an existing disk without the disk plugged in (right-click the disk → **Add Collection…**), e.g. from a copy of the folder on the server;
 - rename and delete collections;
 - delete disks.
@@ -337,7 +351,7 @@ File paths in the index are stored as `DiskLabel/Collection/path/to/file`. This 
 - **FTS5** — a full-text search virtual table on `(name, path)` powers fast text queries.
 - **Incremental detection** — files are compared by `(path, size, mtime)`. No hashing. A 5 TB disk with unchanged files reindexes in seconds.
 - **Directory sizes** — computed at the end of every index or reindex run by summing all non-directory file sizes beneath each directory. Re-indexing an existing disk populates sizes for directories that were previously recorded with a size of 0.
-- **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection.
+- **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection. When indexing, a collection is matched by its folder location or, failing that, by name on the same disk. A collection moved from another disk, or first indexed from a copy elsewhere, is therefore updated in place rather than duplicated.
 - **Multi-DB search** — each `.diskindex` is queried independently; results are merged and sorted in memory.
 - **Duplicate highlighting** — the TUI marks files and directories that share the same name and size (across all indexed disks) in amber.
 

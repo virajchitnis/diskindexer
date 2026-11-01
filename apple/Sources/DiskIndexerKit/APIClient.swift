@@ -67,6 +67,11 @@ public final class APIClient: Sendable {
         try await sendNoContent("PATCH", "v1/collections/\(c.id)", body: Body(db: c.db, label: label))
     }
 
+    public func moveCollection(_ c: Collection, toDisk disk: String) async throws -> Collection {
+        struct Body: Encodable { var db: String; var disk: String }
+        return try await send("POST", "v1/collections/\(c.id)/move", body: Body(db: c.db, disk: disk))
+    }
+
     public func deleteCollection(_ c: Collection) async throws {
         try await sendNoContent("DELETE", "v1/collections/\(c.id)", query: ["db": c.db])
     }

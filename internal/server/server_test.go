@@ -287,3 +287,43 @@ func TestAddCollectionWithoutMountPath(t *testing.T) {
 		Collections: []api.CollectionSpec{{Label: "Gone", RootPath: "/does/not/exist"}},
 	}, nil))
 }
+
+func TestMoveCollection(t *testing.T) {
+	h := newHarness(t, "")
+	require.Equal(t, api.JobDone, h.index(makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Music/x.flac": "x"})).State)
+	var j api.Job
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Disk2", MountPath: makeDisk(t, map[string]string{"Docs/d.txt": "d"})}, &j))
+	require.Equal(t, api.JobDone, h.waitJob(j.ID).State)
+
+	var colls []api.Collection
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/collections?disk=Disk1", nil, &colls))
+	var photos api.Collection
+	for _, c := range colls {
+		if c.Label == "Photos" {
+			photos = c
+		}
+	}
+
+	var moved api.Collection
+	require.Equal(t, http.StatusOK, h.do("POST", fmt.Sprintf("/v1/collections/%d/move", photos.ID), map[string]string{"disk": "Disk2"}, &moved))
+	assert.Equal(t, "Disk2", moved.DiskLabel)
+	assert.Equal(t, photos.ID, moved.ID)
+
+	var res api.SearchResponse
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "a.jpg"}, &res))
+	require.Len(t, res.Results, 1)
+	assert.Equal(t, "Disk2/Photos/a.jpg", res.Results[0].Path)
+
+	// Unknown target disk, unknown collection, and a name clash on the target.
+	assert.Equal(t, http.StatusNotFound, h.do("POST", fmt.Sprintf("/v1/collections/%d/move", photos.ID), map[string]string{"disk": "Nope"}, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("POST", "/v1/collections/9999/move", map[string]string{"disk": "Disk1"}, nil))
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/collections?disk=Disk2", nil, &colls))
+	var docs api.Collection
+	for _, c := range colls {
+		if c.Label == "Docs" {
+			docs = c
+		}
+	}
+	require.Equal(t, http.StatusNoContent, h.do("PATCH", fmt.Sprintf("/v1/collections/%d", docs.ID), map[string]string{"label": "Music"}, nil))
+	assert.Equal(t, http.StatusConflict, h.do("POST", fmt.Sprintf("/v1/collections/%d/move", docs.ID), map[string]string{"disk": "Disk1"}, nil))
+}

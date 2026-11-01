@@ -83,4 +83,13 @@ struct DiskIndexerKitTests {
         new.mountPath = ""
         #expect(new.isValid, "mount path is optional with listed collections")
     }
+
+    @Test func testCollectionDragPayload() {
+        let c = Collection(db: "/home/me/a@b.diskindex", id: 42, diskLabel: "D", label: "Photos", rootPath: "/x", lastIndexedAt: nil)
+        let parsed = CollectionDrag.parse(CollectionDrag.payload(c))
+        #expect(parsed?.id == 42)
+        #expect(parsed?.db == "/home/me/a@b.diskindex")
+        #expect(CollectionDrag.parse("some dropped text") == nil)
+        #expect(CollectionDrag.parse("diskindexer-collection:x@db") == nil)
+    }
 }

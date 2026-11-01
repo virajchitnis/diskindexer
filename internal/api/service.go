@@ -201,6 +201,37 @@ func (s *Service) RenameCollection(dbPath string, id int64, label string) error 
 	return nil
 }
 
+// MoveCollection moves a collection and its files to another disk in the
+// same index file, without re-reading the disk. It returns the collection as
+// it is after the move.
+func (s *Service) MoveCollection(dbPath string, id int64, targetDisk string) (Collection, error) {
+	dbPath, d, err := s.resolveDB(dbPath)
+	if err != nil {
+		return Collection{}, err
+	}
+	if err := s.checkIdle(dbPath); err != nil {
+		return Collection{}, err
+	}
+	target, err := d.GetDiskByLabel(targetDisk)
+	if err != nil {
+		return Collection{}, err
+	}
+	if target == nil {
+		return Collection{}, fmt.Errorf("%w: disk %q is not in %s", ErrNotFound, targetDisk, dbPath)
+	}
+	moved, err := d.MoveCollection(id, target.ID)
+	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			return Collection{}, fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		return Collection{}, err
+	}
+	if moved == nil {
+		return Collection{}, fmt.Errorf("%w: collection %d", ErrNotFound, id)
+	}
+	return collectionFromDB(dbPath, moved), nil
+}
+
 func (s *Service) DeleteCollection(dbPath string, id int64) error {
 	dbPath, d, err := s.resolveDB(dbPath)
 	if err != nil {
