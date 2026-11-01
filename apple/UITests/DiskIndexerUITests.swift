@@ -184,6 +184,15 @@ final class DiskIndexerUITests: XCTestCase {
 
     func testSearchAndFilters() {
         XCTAssertTrue(sidebarItem("Disk A").waitForExistence(timeout: 20))
+        XCTAssertTrue(resultCell("beach.jpg").waitForExistence(timeout: 10))
+
+        // Type filter first: once the search field expands, a narrow window
+        // moves the filter into the toolbar's overflow menu.
+        window.radioButtons["Folders"].click()
+        XCTAssertTrue(waitGone(resultCell("beach.jpg")))
+        XCTAssertTrue(resultCell("Photos").waitForExistence(timeout: 5))
+        window.radioButtons["All"].click()
+        XCTAssertTrue(resultCell("beach.jpg").waitForExistence(timeout: 5))
 
         search("party")
         XCTAssertTrue(resultCell("party.jpg").waitForExistence(timeout: 5))
@@ -193,12 +202,6 @@ final class DiskIndexerUITests: XCTestCase {
         XCTAssertTrue(resultCell("beach.jpg").waitForExistence(timeout: 5))
         // Two copies (Disk A and Disk B) of the same name and size.
         XCTAssertEqual(results.staticTexts.matching(identifier: "beach.jpg").count, 2)
-
-        // Folders only: no files.
-        app.radioButtons["Folders"].click()
-        XCTAssertTrue(waitGone(resultCell("beach.jpg")))
-        app.radioButtons["All"].click()
-        XCTAssertTrue(resultCell("beach.jpg").waitForExistence(timeout: 5))
 
         // Sidebar collection filter: only Disk B's Backup.
         collection("Backup", under: "Disk B").click()
@@ -249,16 +252,16 @@ final class DiskIndexerUITests: XCTestCase {
         XCTAssertTrue(window.buttons["Move"].waitForExistence(timeout: 5), "confirmation before moving")
         clickButton("Move")
 
-        // party.jpg only exists in Disk A's Photos, so its Disk column shows
-        // where the collection is now.
-        search("party")
+        // Filter to the moved collection (no typing, which would put "Undo
+        // Typing" on top of the undo stack): every row is now on Disk B.
+        sidebarItem("Photos").click()
         XCTAssertTrue(resultCell("party.jpg").waitForExistence(timeout: 10))
         XCTAssertTrue(results.staticTexts["Disk B"].waitForExistence(timeout: 10))
         XCTAssertFalse(results.staticTexts["Disk A"].exists)
 
-        // Undo puts it back on Disk A.
+        // Undo puts it back on Disk A; the filter follows it.
         app.menuBars.menuBarItems["Edit"].click()
-        app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'Undo'")).firstMatch.click()
+        app.menuItems["Undo Move Collection"].click()
         XCTAssertTrue(results.staticTexts["Disk A"].waitForExistence(timeout: 10))
         XCTAssertTrue(waitGone(results.staticTexts["Disk B"]))
     }
