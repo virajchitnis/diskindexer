@@ -260,8 +260,10 @@ final class DiskIndexerUITests: XCTestCase {
         XCTAssertFalse(results.staticTexts["Disk A"].exists)
 
         // Undo puts it back on Disk A; the filter follows it.
+        // SwiftUI's Edit menu shows plain "Undo" (no action name); nothing
+        // else was done since the move, so it undoes the move.
         app.menuBars.menuBarItems["Edit"].click()
-        app.menuItems["Undo Move Collection"].click()
+        app.menuItems["undo:"].click()
         XCTAssertTrue(results.staticTexts["Disk A"].waitForExistence(timeout: 10))
         XCTAssertTrue(waitGone(results.staticTexts["Disk B"]))
     }
