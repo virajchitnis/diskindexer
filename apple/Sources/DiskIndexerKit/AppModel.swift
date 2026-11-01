@@ -6,7 +6,12 @@ public enum ConnectionStatus: Equatable {
     case disconnected
     case connecting
     case connected
+    /// Never connected yet; retrying a transient failure (e.g. the network
+    /// or Tailscale isn't up). Carries the latest error.
+    case waiting(String)
+    /// Was connected; the connection dropped and is being retried.
     case reconnecting(String)
+    /// Gave up: something the user has to fix (host key, login, version).
     case failed(String)
 }
 
@@ -39,6 +44,9 @@ public final class AppModel {
     public private(set) var transport: Transport?
     private(set) var client: APIClient?
     private var connectTask: Task<Void, Never>?
+    /// When the current wait between connection attempts ends, so the UI can
+    /// say "retrying in 8s".
+    public private(set) var nextAttempt: Date?
 
     // Metadata
     public private(set) var diskNodes: [DiskNode] = []
@@ -121,17 +129,37 @@ public final class AppModel {
         connectTask = Task { await self.establish(retrying: true) }
     }
 
-    private func establish(retrying: Bool) async {
+    /// Skips the rest of the wait between connection attempts.
+    public func retryNow() {
+        guard transport != nil else { return }
+        let reconnecting: Bool
+        switch status {
+        case .waiting: reconnecting = false
+        case .reconnecting: reconnecting = true
+        case .failed: reconnecting = false; status = .connecting
+        default: return
+        }
+        connectTask?.cancel()
+        connectTask = Task { await self.establish(retrying: reconnecting, alwaysRetry: true) }
+    }
+
+    /// Connects, retrying with backoff. A first connection only retries
+    /// transient failures (see ConnectionFailure); a reconnect, or an explicit
+    /// "try now", retries everything except a version mismatch.
+    private func establish(retrying: Bool, alwaysRetry: Bool = false) async {
         guard let transport else { return }
-        var delay: UInt64 = 1
+        var delay = min(1, Self.maxRetryDelay)
+        var attempted = false
         while !Task.isCancelled {
             do {
-                if retrying { transport.disconnect() }
+                if retrying || attempted { transport.disconnect() }
+                attempted = true
+                nextAttempt = nil
                 let endpoint = try await transport.connect()
                 let client = APIClient(endpoint: endpoint)
                 let info = try await client.info()
                 guard info.apiVersion == supportedAPIVersion else {
-                    throw APIError(status: 0, message: "Server speaks API v\(info.apiVersion); this app needs v\(supportedAPIVersion). Update diskindexer on \(transport.displayName).")
+                    throw ConnectionFailure("Server speaks API v\(info.apiVersion); this app needs v\(supportedAPIVersion). Update diskindexer on \(transport.displayName).", isTransient: false)
                 }
                 guard !Task.isCancelled, self.transport === transport else { return }
                 self.client = client
@@ -142,18 +170,25 @@ public final class AppModel {
                 scheduleSearch(debounce: false)
                 return
             } catch {
-                guard !Task.isCancelled else { return }
-                if !retrying {
-                    status = .failed(error.localizedDescription)
+                guard !Task.isCancelled, self.transport === transport else { return }
+                let message = error.localizedDescription
+                let versionMismatch = (error as? ConnectionFailure)?.isTransient == false && message.contains("API v")
+                let retry = !versionMismatch && (retrying || alwaysRetry || error.isTransientConnectionError)
+                guard retry else {
+                    status = .failed(message)
                     transport.disconnect()
                     return
                 }
-                status = .reconnecting(error.localizedDescription)
-                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-                delay = min(delay * 2, 30)
+                status = retrying ? .reconnecting(message) : .waiting(message)
+                nextAttempt = Date().addingTimeInterval(delay)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                delay = min(delay * 2, Self.maxRetryDelay)
             }
         }
     }
+
+    /// Longest wait between connection attempts. A var so tests can shorten it.
+    static var maxRetryDelay: TimeInterval = 30
 
     // MARK: Metadata
 
@@ -328,11 +363,28 @@ public final class AppModel {
     public func refreshJobs() async {
         guard let client else { return }
         do {
-            jobs = try await client.jobs()
+            let server = try await client.jobs()
+            // Jobs we were following that the server no longer knows about
+            // were lost in a server restart; keep them, marked as such.
+            let known = Set(server.map(\.id))
+            let lost = jobs.filter { !known.contains($0.id) && ($0.state == .running || $0.state == .interrupted) }
+                .map { Self.interrupted($0, Self.serverRestartedMessage) }
+            jobs = (server + lost).sorted { $0.startedAt > $1.startedAt }
             for job in jobs where job.state == .running { watch(job.id) }
         } catch {
             actionError = error.localizedDescription
         }
+    }
+
+    static let serverRestartedMessage = "The server restarted, which stopped this run. Files indexed so far were kept; run it again to finish."
+    static let lostContactMessage = "Lost contact with the server during this run, so its outcome is unknown. Reconnect to check."
+
+    private static func interrupted(_ job: Job, _ message: String) -> Job {
+        guard job.state == .running else { return job }
+        var j = job
+        j.state = .interrupted
+        j.error = message
+        return j
     }
 
     public func startIndex(_ req: IndexRequest) async throws {
@@ -370,18 +422,52 @@ public final class AppModel {
         }
     }
 
+    /// How long to keep asking about a job whose progress stream broke before
+    /// giving up on it. Vars so tests can shorten them.
+    static var jobRecheckDelay: TimeInterval = 2
+    static var jobRecheckAttempts = 15
+
+    /// Follows a job's progress stream. If the stream ends while the job is
+    /// still running (the server restarted, or a request failed) and the
+    /// connection itself is fine, asks the server what happened: re-attaches
+    /// if the job is still running, marks it interrupted if the server no
+    /// longer knows it. A dropped connection cancels this; reconnecting
+    /// re-attaches through refreshJobs.
     private func watch(_ id: String) {
         guard jobWatchers[id] == nil, let client else { return }
         jobWatchers[id] = Task {
             defer { jobWatchers[id] = nil }
-            do {
-                for try await job in client.jobEvents(id) {
+            var failures = 0
+            while !Task.isCancelled, self.client === client {
+                do {
+                    for try await job in client.jobEvents(id) {
+                        update(job)
+                    }
+                } catch {}
+                guard !Task.isCancelled, jobs.first(where: { $0.id == id })?.state == .running else { return }
+                do {
+                    let job = try await client.job(id)
                     update(job)
+                    failures = 0
+                    if job.state != .running { return }
+                } catch let e as APIError where e.status == 404 {
+                    markInterrupted(id, Self.serverRestartedMessage)
+                    return
+                } catch {
+                    failures += 1
+                    if failures >= Self.jobRecheckAttempts {
+                        markInterrupted(id, Self.lostContactMessage)
+                        return
+                    }
                 }
-            } catch {
-                // Stream dropped (e.g. tunnel died). Reconnecting re-attaches.
+                try? await Task.sleep(nanoseconds: UInt64(Self.jobRecheckDelay * 1_000_000_000))
             }
         }
+    }
+
+    private func markInterrupted(_ id: String, _ message: String) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i] = Self.interrupted(jobs[i], message)
     }
 
     private func stopWatchingJobs() {

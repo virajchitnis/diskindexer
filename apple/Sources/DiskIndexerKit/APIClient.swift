@@ -34,14 +34,20 @@ public struct APIError: LocalizedError, Sendable {
 public final class APIClient: Sendable {
     public let endpoint: Endpoint
     private let session: URLSession
+    private let eventsSession: URLSession
 
     public init(endpoint: Endpoint) {
         self.endpoint = endpoint
+        // Ordinary requests: a dead server or tunnel should surface quickly.
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        // Progress streams stay open for the whole index run.
-        config.timeoutIntervalForResource = 7 * 24 * 3600
+        config.timeoutIntervalForRequest = 15
         session = URLSession(configuration: config)
+        // Progress streams stay open for the whole run and can go quiet during
+        // long phases; if one idles out, AppModel re-attaches.
+        let events = URLSessionConfiguration.ephemeral
+        events.timeoutIntervalForRequest = 120
+        events.timeoutIntervalForResource = 7 * 24 * 3600
+        eventsSession = URLSession(configuration: events)
     }
 
     // MARK: Endpoints
@@ -88,6 +94,10 @@ public final class APIClient: Sendable {
         try await send("POST", "v1/jobs", body: req)
     }
 
+    public func job(_ id: String) async throws -> Job {
+        try await send("GET", "v1/jobs/\(id)")
+    }
+
     public func cancelJob(_ id: String) async throws -> Job {
         try await send("DELETE", "v1/jobs/\(id)")
     }
@@ -106,7 +116,7 @@ public final class APIClient: Sendable {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await session.bytes(for: request("GET", "v1/jobs/\(id)/events"))
+                    let (bytes, response) = try await eventsSession.bytes(for: request("GET", "v1/jobs/\(id)/events"))
                     try check(response, data: nil)
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }

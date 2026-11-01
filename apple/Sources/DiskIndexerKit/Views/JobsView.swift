@@ -62,7 +62,7 @@ struct JobRow: View {
                 }
                 HStack {
                     Text(job.phaseTitle)
-                        .foregroundStyle(job.state == .failed ? .red : job.errorCount > 0 ? .orange : .primary)
+                        .foregroundStyle(job.state == .failed ? .red : (job.errorCount > 0 || job.state == .interrupted) ? .orange : .primary)
                     Spacer()
                     Text(detail(now: ctx.date))
                         .foregroundStyle(.secondary)
@@ -75,7 +75,7 @@ struct JobRow: View {
                 if let err = job.error {
                     Text(err)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(job.state == .interrupted ? .orange : .red)
                         .textSelection(.enabled)
                 }
             }

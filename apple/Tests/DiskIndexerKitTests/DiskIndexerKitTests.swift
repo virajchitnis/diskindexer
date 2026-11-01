@@ -115,4 +115,39 @@ struct DiskIndexerKitTests {
         running.progress.phase = "root"
         #expect(running.phaseTitle == "Indexing files at the top of the disk")
     }
+
+    @Test func testSSHFailureClassification() {
+        // Messages as macOS's ssh prints them.
+        #expect(SSHFailureKind.classify("ssh: Could not resolve hostname enterprise: nodename nor servname provided, or not known") == .network)
+        #expect(SSHFailureKind.classify("ssh: connect to host 100.64.0.5 port 22: Operation timed out") == .network)
+        #expect(SSHFailureKind.classify("ssh: connect to host enterprise port 22: No route to host") == .network)
+        #expect(SSHFailureKind.classify("ssh: connect to host enterprise port 22: Connection refused") == .network)
+        #expect(SSHFailureKind.classify("Connection closed by 100.64.0.5 port 22") == .network)
+        #expect(SSHFailureKind.classify("kex_exchange_identification: read: Connection reset by peer") == .network)
+        #expect(SSHFailureKind.classify("Timeout, server enterprise not responding.") == .network)
+        #expect(SSHFailureKind.classify("Host key verification failed.") == .hostKey)
+        #expect(SSHFailureKind.classify("@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.") == .hostKey)
+        #expect(SSHFailureKind.classify("viraj@enterprise: Permission denied (publickey,password).") == .auth)
+        #expect(SSHFailureKind.classify("something unexpected") == .other)
+        #expect(SSHFailureKind.network.isTransient && SSHFailureKind.other.isTransient)
+        #expect(!SSHFailureKind.auth.isTransient && !SSHFailureKind.hostKey.isTransient)
+
+        #expect(ConnectionFailure("x", isTransient: true).isTransientConnectionError)
+        #expect(!ConnectionFailure("x", isTransient: false).isTransientConnectionError)
+        #expect(URLError(.cannotConnectToHost).isTransientConnectionError)
+        #expect(!APIError(status: 500, message: "boom").isTransientConnectionError)
+    }
+
+    @Test func testStoppedJobsDontShowAFullBar() throws {
+        var j = try APIClient.decoder.decode(Job.self, from: Data(#"""
+        {"id":"a","state":"running","request":{"disk":"D","mountPath":"/m"},"startedAt":"2026-11-01T00:00:00Z","progress":{"phase":"indexing","added":25,"updated":0,"skipped":25,"total":200,"dirsTotal":0,"dirsDone":0}}
+        """#.utf8))
+        j.state = .interrupted
+        #expect(j.fraction == 0.25)
+        #expect(j.phaseTitle == "Interrupted")
+        j.progress.total = 0
+        #expect(j.fraction == 0)
+        j.state = .done
+        #expect(j.fraction == 1)
+    }
 }

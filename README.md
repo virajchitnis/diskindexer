@@ -318,7 +318,9 @@ The app is ad-hoc signed. On a Mac other than the one that built it, open it the
 How the connection works:
 - The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server.
 - It can't answer password or host-key prompts, so `ssh <host>` must already work from Terminal without prompting.
-- If the connection drops, for example when the Mac sleeps, the app reconnects on its own. Index jobs keep running on the server, and their progress reappears once the app reconnects.
+- If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop with advice instead of retrying.
+- If the connection drops, for example when the Mac sleeps, the app notices within about 15 seconds and reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
+- Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
 
 ## TUI Controls
 

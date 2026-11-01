@@ -43,7 +43,8 @@ final class SSHTunnel: Transport {
         let cmd = diesWithParent(Self.ssh, commonOptions + [
             "-N",
             "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=15",
+            // Notice a dead link (Tailscale down, Wi-Fi change, sleep) in ~15s.
+            "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=3",
             "-L", "127.0.0.1:\(port):\(socket)",
             host,
@@ -74,7 +75,7 @@ final class SSHTunnel: Transport {
         while Date() < deadline {
             if !p.isRunning {
                 process = nil
-                throw ProcessFailure(message: "SSH to \(host) failed: \(errBuf.text)")
+                throw sshFailure(errBuf.text)
             }
             if (try? await client.info()) != nil {
                 return endpoint
@@ -82,7 +83,29 @@ final class SSHTunnel: Transport {
             try await Task.sleep(nanoseconds: 250_000_000)
         }
         disconnect()
-        throw ProcessFailure(message: "Timed out waiting for diskindexer on \(host).")
+        // Usually the service restarting, or a socket left by a crash.
+        throw ConnectionFailure("Timed out waiting for diskindexer on \(host).", isTransient: true)
+    }
+
+    /// Turns ssh's stderr into a failure with advice that fits the cause.
+    private func sshFailure(_ stderr: String) -> ConnectionFailure {
+        let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch SSHFailureKind.classify(detail) {
+        case .network:
+            return ConnectionFailure("Can\u{2019}t reach \(host): \(detail)\nCheck that the server is on and the network (or Tailscale) is connected.", isTransient: true)
+        case .hostKey:
+            return ConnectionFailure("""
+                \(host)\u{2019}s host key isn\u{2019}t trusted: \(detail)
+                Run `ssh \(host)` in Terminal to check and accept it; the app can\u{2019}t answer that prompt.
+                """, isTransient: false)
+        case .auth:
+            return ConnectionFailure("""
+                \(host) refused the login: \(detail)
+                The app uses your ~/.ssh/config and ssh-agent and can\u{2019}t type a password. Make sure \u{201C}ssh \(host)\u{201D} works in Terminal without prompting.
+                """, isTransient: false)
+        case .other:
+            return ConnectionFailure("SSH to \(host) failed: \(detail.isEmpty ? "ssh exited" : detail)", isTransient: true)
+        }
     }
 
     /// Logs in once to turn the socket path into an absolute one and to check
@@ -102,18 +125,16 @@ final class SSHTunnel: Transport {
         case 0 where out.hasPrefix("/"):
             return out
         case 3:
+            // Retried: the service may just be restarting.
             let missing = out.replacingOccurrences(of: "missing ", with: "")
-            throw ProcessFailure(message: """
+            throw ConnectionFailure("""
                 diskindexer isn't running on \(host): no socket at \(missing).
                 Start it there with `systemctl --user start diskindexer` (set up with `make install-service`), or run `diskindexer serve`.
-                """)
+                """, isTransient: true)
         case 255:
-            throw ProcessFailure(message: """
-                Couldn't SSH to \(host): \(r.stderr)
-                The app uses your ~/.ssh/config and ssh-agent and can't answer prompts. Run `ssh \(host)` in Terminal once to accept the host key and make sure your key is loaded.
-                """)
+            throw sshFailure(r.stderr)
         default:
-            throw ProcessFailure(message: "Checking diskindexer on \(host) failed: \(r.stderr.isEmpty ? out : r.stderr)")
+            throw ConnectionFailure("Checking diskindexer on \(host) failed: \(r.stderr.isEmpty ? out : r.stderr)", isTransient: true)
         }
     }
 

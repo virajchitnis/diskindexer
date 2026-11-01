@@ -102,22 +102,53 @@ public struct BrowserView: View {
     private var detail: some View {
         switch model.status {
         case .connected, .reconnecting:
+            let offline = model.status != .connected
             VStack(spacing: 0) {
+                // Stale results stay usable (copy a path) but look stale.
+                ResultsTable(model: model, dimmed: offline)
+                    // The table's scroll view otherwise draws past its frame,
+                    // under the banner below.
+                    .clipped()
+                // Below the table, not above it: the table extends under the
+                // toolbar and pins its column header over anything on top.
                 if case let .reconnecting(reason) = model.status {
-                    Banner(text: "Reconnecting… \(reason)", systemImage: "wifi.exclamationmark")
+                    Divider()
+                    Banner(systemImage: "wifi.exclamationmark", retry: model.retryNow) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text("Reconnecting to \(model.transport?.displayName ?? "the server")")
+                                    .fontWeight(.medium)
+                                RetryCountdown(until: model.nextAttempt)
+                            }
+                            Text("Showing results from before the connection dropped. Searches will run once it\u{2019}s back.")
+                            Text(reason).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
                 }
-                ResultsTable(model: model)
                 Divider()
                 StatusBar(model: model)
             }
         case .connecting:
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .waiting(let message):
+            ContentUnavailableView {
+                Label("Waiting for \(model.transport?.displayName ?? "the server")", systemImage: "antenna.radiowaves.left.and.right")
+            } description: {
+                VStack(spacing: 6) {
+                    Text(message).textSelection(.enabled)
+                    RetryCountdown(until: model.nextAttempt)
+                }
+            } actions: {
+                Button("Try Now", action: model.retryNow)
+            }
         case .failed(let message):
             ContentUnavailableView {
                 Label("Couldn't connect", systemImage: "bolt.horizontal.circle")
             } description: {
                 Text(message).textSelection(.enabled)
+            } actions: {
+                Button("Try Again", action: model.retryNow)
             }
         case .disconnected:
             ContentUnavailableView("Not connected", systemImage: "externaldrive.badge.questionmark",
@@ -126,18 +157,48 @@ public struct BrowserView: View {
     }
 }
 
-struct Banner: View {
-    var text: String
+struct Banner<Content: View>: View {
     var systemImage: String
+    var retry: (() -> Void)?
+    @ViewBuilder var content: Content
 
     var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.callout)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.yellow.opacity(0.25))
+        HStack(alignment: .top) {
+            Image(systemName: systemImage)
+            content
+            Spacer()
+            if let retry {
+                Button("Try Now", action: retry)
+                    .controlSize(.small)
+            }
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background {
+            // Opaque, so nothing scrolled beneath it shows through.
+            Rectangle().fill(.background)
+                .overlay(Rectangle().fill(.yellow.opacity(0.25)))
+        }
+    }
+}
+
+/// "Retrying in 8s", counting down to the next connection attempt.
+struct RetryCountdown: View {
+    var until: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            if let until {
+                let s = max(0, Int(until.timeIntervalSince(ctx.date).rounded(.up)))
+                Text(s > 0 ? "\u{2014} retrying in \(s)s" : "\u{2014} retrying\u{2026}")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else {
+                Text("\u{2014} trying\u{2026}").foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

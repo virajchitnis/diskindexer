@@ -152,6 +152,9 @@ public struct JobStats: Codable, Hashable, Sendable {
 
 public enum JobState: String, Codable, Sendable {
     case running, done, failed, cancelled
+    /// Client-side only: the app lost track of a running job, e.g. because
+    /// the server restarted (which stops it). Never sent by the server.
+    case interrupted
 }
 
 public struct Job: Codable, Hashable, Sendable, Identifiable {

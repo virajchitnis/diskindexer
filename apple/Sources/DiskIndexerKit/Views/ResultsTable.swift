@@ -2,9 +2,15 @@ import SwiftUI
 
 struct ResultsTable: View {
     @Bindable var model: AppModel
+    /// Fades the rows, e.g. while showing results from before a dropped
+    /// connection. Applied per cell: the table itself is an AppKit view that
+    /// SwiftUI's .opacity and overlays don't reach.
+    var dimmed = false
     /// Column widths and order. Kept outside the table, which is rebuilt for
     /// each result set, and saved with the window.
     @SceneStorage("resultsTableColumns") private var columns = TableColumnCustomization<FileItem>()
+
+    private var cellOpacity: Double { dimmed ? 0.4 : 1 }
 
     private static let dateFormat: Date.FormatStyle = .dateTime.year().month(.abbreviated).day().hour().minute()
 
@@ -19,6 +25,7 @@ struct ResultsTable: View {
                 }
                 .foregroundStyle(model.isDuplicate(f) ? Color.orange : Color.primary)
                 .help(f.path)
+                .opacity(cellOpacity)
             }
             .width(min: 160, ideal: 320)
             .customizationID("name")
@@ -26,19 +33,25 @@ struct ResultsTable: View {
                 Text(Format.size(f.size))
                     .monospacedDigit()
                     .foregroundStyle(model.isDuplicate(f) ? Color.orange : Color.primary)
+                    .opacity(cellOpacity)
             }
             .width(min: 60, ideal: 80)
             .customizationID("size")
             TableColumn("Modified", value: \.modifiedAt) { f in
                 Text(f.modifiedAt, format: Self.dateFormat)
                     .foregroundStyle(.secondary)
+                    .opacity(cellOpacity)
             }
             .width(min: 110, ideal: 150)
             .customizationID("modified")
-            TableColumn("Disk", value: \.diskLabel)
+            TableColumn("Disk", value: \.diskLabel) { f in
+                Text(f.diskLabel).opacity(cellOpacity)
+            }
                 .width(min: 60, ideal: 110)
                 .customizationID("disk")
-            TableColumn("Collection", value: \.collLabel)
+            TableColumn("Collection", value: \.collLabel) { f in
+                Text(f.collLabel).opacity(cellOpacity)
+            }
                 .width(min: 60, ideal: 130)
                 .customizationID("collection")
         }

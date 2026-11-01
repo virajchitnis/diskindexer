@@ -15,13 +15,19 @@ final class ServeTransport: Transport {
     var onDisconnect: (@Sendable (String) -> Void)?
 
     let dbPath: String
+    /// Fixed port and token, so a relaunch looks like the same server
+    /// restarting behind a tunnel that stayed up. nil means random.
+    let port: Int?
+    let fixedToken: String?
     private(set) var endpoint: Endpoint?
     private(set) var launches = 0
     private var process: Process?
     private var stopping = false
 
-    init(dbPath: String) {
+    init(dbPath: String, port: Int? = nil, token: String? = nil) {
         self.dbPath = dbPath
+        self.port = port
+        self.fixedToken = token
     }
 
     static func binaryPath() throws -> String {
@@ -40,10 +46,10 @@ final class ServeTransport: Transport {
 
     func connect() async throws -> Endpoint {
         stopping = false
-        let token = UUID().uuidString
+        let token = fixedToken ?? UUID().uuidString
         let p = Process()
         p.executableURL = URL(fileURLWithPath: try Self.binaryPath())
-        p.arguments = ["serve", "--listen", "127.0.0.1:0", "--stdin-watch", "--db", dbPath]
+        p.arguments = ["serve", "--listen", "127.0.0.1:\(port ?? 0)", "--stdin-watch", "--db", dbPath]
         var env = ProcessInfo.processInfo.environment
         env["DISKINDEXER_TOKEN"] = token
         p.environment = env
@@ -78,7 +84,58 @@ final class ServeTransport: Transport {
 
     func crash() {
         process?.terminate()
+        process?.waitUntilExit()
     }
+}
+
+/// Fails the first `failures` connects with the given error, then connects
+/// through `inner`.
+final class FlakyTransport: Transport {
+    let displayName = "Flaky"
+    let isLocal = true
+    var onDisconnect: (@Sendable (String) -> Void)? {
+        get { inner.onDisconnect }
+        set { inner.onDisconnect = newValue }
+    }
+    let inner: ServeTransport
+    var failures: Int
+    let error: Error
+    private(set) var attempts = 0
+
+    init(_ inner: ServeTransport, failures: Int, error: Error) {
+        self.inner = inner
+        self.failures = failures
+        self.error = error
+    }
+
+    func connect() async throws -> Endpoint {
+        attempts += 1
+        if failures > 0 {
+            failures -= 1
+            throw error
+        }
+        return try await inner.connect()
+    }
+
+    func disconnect() { inner.disconnect() }
+}
+
+/// A free loopback port for tests that need a stable address.
+private func freePort() throws -> Int {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let ok = withUnsafeMutablePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(fd, $0, len) == 0 && getsockname(fd, $0, &len) == 0
+        }
+    }
+    guard ok else { throw APIError(status: 0, message: "no free port") }
+    return Int(UInt16(bigEndian: addr.sin_port))
 }
 
 /// Connects to an already-running server, like a second app window or a
@@ -370,13 +427,106 @@ struct AppModelIntegrationTests {
         #expect(model.jobs.isEmpty)
     }
 
-    @Test func unreachableServerReportsFailure() async throws {
+    @Test func waitsAndRetriesWhileTheNetworkIsDown() async throws {
+        AppModel.maxRetryDelay = 0.1
+        defer { AppModel.maxRetryDelay = 30 }
         let model = AppModel()
-        // Nothing listens on port 9 (discard) on loopback.
-        model.connect(FixedTransport(Endpoint(baseURL: URL(string: "http://127.0.0.1:9/")!)))
+        let flaky = FlakyTransport(ServeTransport(dbPath: scratchDB()), failures: 3,
+                                   error: ConnectionFailure("Can\u{2019}t reach host: Could not resolve hostname", isTransient: true))
+        var sawWaiting = false
+        model.connect(flaky)
+        #expect(await eventually {
+            if case .waiting(let m) = model.status, m.contains("resolve") { sawWaiting = true }
+            return model.status == .connected
+        })
+        defer { model.disconnect() }
+        #expect(sawWaiting, "shows why it's waiting while retrying")
+        #expect(flaky.attempts == 4)
+    }
+
+    @Test func stopsOnProblemsTheUserMustFix() async throws {
+        AppModel.maxRetryDelay = 0.1
+        defer { AppModel.maxRetryDelay = 30 }
+        let model = AppModel()
+        let flaky = FlakyTransport(ServeTransport(dbPath: scratchDB()), failures: 1,
+                                   error: ConnectionFailure("host refused the login: Permission denied (publickey)", isTransient: false))
+        model.connect(flaky)
         #expect(await eventually {
             if case .failed = model.status { return true }
             return false
         })
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(flaky.attempts == 1, "no automatic retries")
+
+        // "Try Again" connects once the problem is fixed.
+        model.retryNow()
+        #expect(await eventually { model.status == .connected })
+        model.disconnect()
+    }
+
+    /// The server restarts (e.g. a redeploy) while the tunnel stays up, so the
+    /// app never sees a disconnect. The running job's stream breaks; the app
+    /// asks about it, the new server doesn't know it, so it's shown as
+    /// interrupted instead of running forever.
+    @Test func jobLostToServerRestartIsMarkedInterrupted() async throws {
+        AppModel.jobRecheckDelay = 0.1
+        AppModel.jobRecheckAttempts = 100
+        defer { AppModel.jobRecheckDelay = 2; AppModel.jobRecheckAttempts = 15 }
+        let server = ServeTransport(dbPath: scratchDB(), port: try freePort(), token: "t")
+        let endpoint = try await server.connect()
+        defer { server.disconnect() }
+        let model = AppModel()
+        model.connect(FixedTransport(endpoint))
+        #expect(await eventually { model.status == .connected })
+        defer { model.disconnect() }
+
+        var big: [String: String] = [:]
+        for i in 0..<3000 { big["C/d\(i % 40)/f\(i).txt"] = "x" }
+        try await model.startIndex(IndexRequest(disk: "Big", mountPath: try makeDisk(big)))
+        server.crash()
+        _ = try await server.connect()   // same port and token: a restart
+
+        #expect(await eventually { model.jobs.first?.state == .interrupted })
+        #expect(model.jobs.first?.error?.contains("server restarted") == true)
+        #expect(model.runningJobs.isEmpty)
+        #expect(model.status == .connected)
+
+        // Refreshing from the (new) server keeps it listed as interrupted.
+        await model.refreshJobs()
+        #expect(model.jobs.first?.state == .interrupted)
+    }
+
+    @Test func jobWithServerGoneIsEventuallyMarkedLost() async throws {
+        AppModel.jobRecheckDelay = 0.05
+        AppModel.jobRecheckAttempts = 5
+        defer { AppModel.jobRecheckDelay = 2; AppModel.jobRecheckAttempts = 15 }
+        let server = ServeTransport(dbPath: scratchDB())
+        let endpoint = try await server.connect()
+        let model = AppModel()
+        model.connect(FixedTransport(endpoint))
+        #expect(await eventually { model.status == .connected })
+        defer { model.disconnect() }
+
+        var big: [String: String] = [:]
+        for i in 0..<3000 { big["C/d\(i % 40)/f\(i).txt"] = "x" }
+        try await model.startIndex(IndexRequest(disk: "Big", mountPath: try makeDisk(big)))
+        server.disconnect()
+
+        #expect(await eventually { model.jobs.first?.state == .interrupted })
+        #expect(model.jobs.first?.error?.contains("Lost contact") == true)
+    }
+
+    @Test func unreachableServerKeepsWaiting() async throws {
+        AppModel.maxRetryDelay = 0.1
+        defer { AppModel.maxRetryDelay = 30 }
+        let model = AppModel()
+        // Nothing listens on port 9 (discard) on loopback: connection refused,
+        // which is a network problem, so the app waits rather than giving up.
+        model.connect(FixedTransport(Endpoint(baseURL: URL(string: "http://127.0.0.1:9/")!)))
+        #expect(await eventually {
+            if case .waiting = model.status { return true }
+            return false
+        })
+        model.disconnect()
     }
 }

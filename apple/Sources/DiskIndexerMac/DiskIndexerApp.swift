@@ -79,6 +79,7 @@ struct ContentView: View {
             let n = model.diskNodes.count
             return n == 1 ? "1 disk" : "\(n) disks"
         case .connecting: return "Connecting…"
+        case .waiting: return "Waiting for connection…"
         case .reconnecting: return "Reconnecting…"
         case .failed: return "Not connected"
         case .disconnected: return ""
@@ -150,7 +151,7 @@ struct ConnectionMenu: View {
     private var statusColor: Color {
         switch model.status {
         case .connected: .green
-        case .connecting, .reconnecting: .yellow
+        case .connecting, .waiting, .reconnecting: .yellow
         case .failed: .red
         case .disconnected: .gray
         }

@@ -50,15 +50,21 @@ public extension Job {
     var processed: Int { progress.added + progress.updated + progress.skipped }
 
     /// 0...1 when the phase has a known total, nil for indeterminate.
+    /// 0...1 when the phase has a known total, nil (indeterminate) while
+    /// running without one. A job that stopped early (cancelled, failed,
+    /// interrupted) shows where it stopped rather than a full bar.
     var fraction: Double? {
+        if state == .done { return 1 }
+        var live: Double?
         switch progress.phase {
         case "indexing" where progress.total > 0:
-            return min(1, Double(processed) / Double(progress.total))
+            live = min(1, Double(processed) / Double(progress.total))
         case "sizes" where progress.dirsTotal > 0:
-            return Double(progress.dirsDone) / Double(progress.dirsTotal)
+            live = Double(progress.dirsDone) / Double(progress.dirsTotal)
         default:
-            return state == .running ? nil : 1
+            break
         }
+        return state == .running ? live : (live ?? 0)
     }
 
     var phaseTitle: String {
@@ -68,6 +74,7 @@ public extension Job {
             return n == 0 ? "Done" : "Done, \(n) unreadable"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
+        case .interrupted: return "Interrupted"
         case .running:
             switch progress.phase {
             case "loading": return "Loading existing index"
