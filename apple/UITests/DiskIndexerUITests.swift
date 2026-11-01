@@ -154,7 +154,7 @@ final class DiskIndexerUITests: XCTestCase {
     private func search(_ text: String) {
         let field = app.searchFields.firstMatch
         if !field.exists {
-            app.buttons["Search"].firstMatch.click()
+            window.buttons["Search"].firstMatch.click()
         }
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.click()
@@ -208,7 +208,7 @@ final class DiskIndexerUITests: XCTestCase {
 
     func testIndexDiskFromSheet() {
         XCTAssertTrue(sidebarItem("Disk A").waitForExistence(timeout: 20))
-        app.buttons["Index Disk"].firstMatch.click()
+        window.buttons["Index Disk"].firstMatch.click()
 
         let label = app.textFields["index.diskLabel"]
         XCTAssertTrue(label.waitForExistence(timeout: 5))
