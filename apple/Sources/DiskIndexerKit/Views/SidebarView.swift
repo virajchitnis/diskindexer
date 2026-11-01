@@ -35,6 +35,9 @@ struct SidebarView: View {
     @State private var deletingCollection: Collection?
     @State private var deletingDisk: DiskNode?
     @State private var pendingMove: PendingMove?
+    /// Why a dropped collection can't go to that disk, shown instead of the
+    /// move confirmation.
+    @State private var blockedMove: String?
     @State private var dropTarget: String?
     @Environment(\.undoManager) private var undoManager
 
@@ -132,6 +135,11 @@ struct SidebarView: View {
                 reindex \(move.target) later to pick up other changes. You can undo this.
                 """)
         }
+        .alert("Can\u{2019}t Move Collection", isPresented: Binding(get: { blockedMove != nil }, set: { if !$0 { blockedMove = nil } })) {
+            Button("OK") { blockedMove = nil }
+        } message: {
+            Text(blockedMove ?? "")
+        }
         .confirmationDialog("Delete disk \"\(deletingDisk?.label ?? "")\"?",
                             isPresented: Binding(get: { deletingDisk != nil }, set: { if !$0 { deletingDisk = nil } }),
                             titleVisibility: .visible) {
@@ -154,7 +162,13 @@ struct SidebarView: View {
         let targets = model.moveTargets(for: coll)
         Menu("Move to") {
             ForEach(targets, id: \.self) { target in
-                Button(target) { pendingMove = PendingMove(collection: coll, target: target) }
+                if model.moveConflict(for: coll, to: target) != nil {
+                    // Listed but unavailable, so it's clear why it can't be picked.
+                    Button("\(target) \u{2014} already has \u{201C}\(coll.label)\u{201D}") {}
+                        .disabled(true)
+                } else {
+                    Button(target) { pendingMove = PendingMove(collection: coll, target: target) }
+                }
             }
         }
         .disabled(targets.isEmpty)
@@ -178,12 +192,17 @@ struct SidebarView: View {
             DispatchQueue.main.async { dropTarget = nil }
             return false
         }
+        let conflict = model.moveConflict(for: coll, to: node.label)
         // See isTargeted: don't change state during the drop callback.
         DispatchQueue.main.async {
             dropTarget = nil
-            pendingMove = PendingMove(collection: coll, target: node.label)
+            if let conflict {
+                blockedMove = conflict
+            } else {
+                pendingMove = PendingMove(collection: coll, target: node.label)
+            }
         }
-        return true
+        return conflict == nil
     }
 
     /// Moves, then registers the reverse move with the window's undo manager.

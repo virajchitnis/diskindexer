@@ -273,6 +273,14 @@ struct AppModelIntegrationTests {
         #expect(await eventually { model.diskNodes.count == 2 })
 
         let music = try #require(model.diskNodes[0].collections.first { $0.label == "Music" })
+        // The UI knows about the clash before asking the server: the disk is
+        // still listed (so the menu can say why) but flagged.
+        #expect(model.moveTargets(for: music) == ["Disk2"])
+        #expect(model.moveConflict(for: music, to: "Disk2")?.contains("already has a collection named") == true)
+        let movies = try #require(model.diskNodes[0].collections.first { $0.label == "Movies" })
+        #expect(model.moveConflict(for: movies, to: "Disk2") == nil)
+
+        // The server refuses it too, if it's attempted anyway.
         #expect(await model.moveCollection(music, toDisk: "Disk2") == nil)
         #expect(model.actionError?.contains("already has a collection named") == true)
         #expect(model.diskNodes[0].collections.contains { $0.label == "Music" })

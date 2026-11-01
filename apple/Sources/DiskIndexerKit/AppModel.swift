@@ -266,6 +266,17 @@ public final class AppModel {
             .map(\.label)
     }
 
+    /// Why `c` can't be moved to `disk`, or nil if it can. Collections are
+    /// never merged (the index must match the real disk), so a name already
+    /// used on the target rules it out. The server enforces the same rule;
+    /// this lets the UI say so before the user confirms.
+    public func moveConflict(for c: Collection, to disk: String) -> String? {
+        guard let node = diskNodes.first(where: { $0.label == disk }),
+              node.collections.contains(where: { $0.label == c.label })
+        else { return nil }
+        return "\u{201C}\(disk)\u{201D} already has a collection named \u{201C}\(c.label)\u{201D}, so this one can't be moved there."
+    }
+
     /// Finds a collection in the sidebar by its index file and ID.
     public func collection(db: String, id: Int64) -> Collection? {
         diskNodes.lazy.flatMap(\.collections).first { $0.db == db && $0.id == id }
