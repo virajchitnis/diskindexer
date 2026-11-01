@@ -1,5 +1,10 @@
-GO := $(shell test -x ../go/bin/go && echo ../go/bin/go || echo go)
-GH := $(shell test -x ../gh/bin/gh && echo ../gh/bin/gh || echo gh)
+# Local toolchains live next to the checkout (../go, ../gh). In a git worktree
+# that's next to the main checkout instead, so look there too. Paths are
+# resolved to absolute ones (the main checkout's path has a space in it).
+MAIN_ROOT := $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
+find_tool = $(shell for d in ../$(1)/bin "$(MAIN_ROOT)/../$(1)/bin"; do if [ -x "$$d/$(1)" ]; then echo "$$(cd "$$d" && pwd -P)/$(1)"; exit 0; fi; done; echo $(1))
+GO := $(call find_tool,go)
+GH := $(call find_tool,gh)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(VERSION) -X github.com/viraj/diskindexer/cmd.buildDate=$(BUILD_DATE)"
