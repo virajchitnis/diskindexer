@@ -77,6 +77,17 @@ final class DiskIndexerUITests: XCTestCase {
         fixture = nil
     }
 
+    /// Prints the app's element tree to the log on the first failure, so CI
+    /// failures can be diagnosed without opening the result bundle.
+    private var dumpedTree = false
+    override func record(_ issue: XCTIssue) {
+        if !dumpedTree, let app, app.state == .runningForeground || app.state == .runningBackground {
+            dumpedTree = true
+            print("── UI element tree at failure ──\n\(app.debugDescription)")
+        }
+        super.record(issue)
+    }
+
     private func launch(bin: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = [
@@ -94,14 +105,33 @@ final class DiskIndexerUITests: XCTestCase {
     private var sidebar: XCUIElement { app.outlines.firstMatch }
     private var results: XCUIElement { app.tables["results"] }
 
+    /// A sidebar row by its text. Disk rows are DisclosureGroup labels,
+    /// which macOS exposes as the disclosure triangle's title rather than as
+    /// static text, so match any element by label, title or value.
     private func sidebarItem(_ label: String) -> XCUIElement {
-        sidebar.staticTexts[label].firstMatch
+        sidebar.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@ OR title == %@ OR value == %@", label, label, label))
+            .firstMatch
+    }
+
+    /// Clicks the matching element that can actually be clicked, e.g. the
+    /// alert's "Rename" button rather than another element with that name.
+    private func clickHittable(_ query: XCUIElementQuery, _ name: String) {
+        let matches = query.matching(identifier: name)
+        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), name)
+        for i in 0..<matches.count where matches.element(boundBy: i).isHittable {
+            matches.element(boundBy: i).click()
+            return
+        }
+        XCTFail("no clickable \(name)")
     }
 
     /// Expands a disk in the sidebar to show its collections.
     private func expand(_ disk: String) {
-        let row = sidebar.outlineRows.containing(NSPredicate(format: "label == %@ OR value == %@", disk, disk)).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "sidebar row for \(disk)")
+        let row = sidebar.outlineRows
+            .containing(NSPredicate(format: "label == %@ OR title == %@ OR value == %@", disk, disk, disk))
+            .firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "sidebar row for \(disk)")
         let triangle = row.disclosureTriangles.firstMatch
         if triangle.exists, (triangle.value as? Int ?? 0) == 0 {
             triangle.click()
@@ -196,7 +226,7 @@ final class DiskIndexerUITests: XCTestCase {
         // The alert's text field is focused with the current name.
         app.typeKey("a", modifierFlags: .command)
         app.typeText("Pictures")
-        app.buttons["Rename"].click()
+        clickHittable(app.buttons, "Rename")
 
         XCTAssertTrue(sidebarItem("Pictures").waitForExistence(timeout: 10))
         XCTAssertTrue(waitGone(sidebarItem("Photos")))
@@ -208,9 +238,8 @@ final class DiskIndexerUITests: XCTestCase {
         let diskB = sidebarItem("Disk B")
 
         photos.click(forDuration: 0.5, thenDragTo: diskB)
-        let move = app.buttons["Move"]
-        XCTAssertTrue(move.waitForExistence(timeout: 5), "confirmation before moving")
-        move.click()
+        XCTAssertTrue(app.buttons["Move"].waitForExistence(timeout: 5), "confirmation before moving")
+        clickHittable(app.buttons, "Move")
 
         // party.jpg only exists in Disk A's Photos, so its Disk column shows
         // where the collection is now.
@@ -232,10 +261,9 @@ final class DiskIndexerUITests: XCTestCase {
 
         music.click(forDuration: 0.5, thenDragTo: sidebarItem("Disk B"))
         // Disk B already has a Music collection: explained, not merged.
-        let ok = app.buttons["OK"]
-        XCTAssertTrue(ok.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["OK"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Move"].exists)
-        ok.click()
+        clickHittable(app.buttons, "OK")
     }
 
     func testCouldNotStartServer() {

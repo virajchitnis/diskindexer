@@ -21,6 +21,7 @@ make install-service     # install + systemd user service running `diskindexer s
 make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
 make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
 make test-apple          # Swift tests incl. AppModel tests against a real `serve` (builds the binary first)
+make coverage            # Go + Swift coverage gates (fail below COVERAGE_MIN=80)
 make release             # build all three platform binaries + gh release create
 make test                # run all tests
 make clean               # remove build artifacts
@@ -35,8 +36,12 @@ go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --
 
 ## Test
 
-CI (`.github/workflows/ci.yml`) runs on every push to main and every PR: Go vet + race tests and
-cross-compiles on Ubuntu; `make test-apple` and `make mac-app` on macOS (uploads the app zip).
+CI (`.github/workflows/ci.yml`) runs on every push to main and every PR:
+- Ubuntu: Go vet, race tests, the Go coverage gate, and cross-compiles.
+- macOS: `make coverage-apple` and `make mac-app` (uploads the app zip).
+- macOS UI tests: generates `apple/Xcode/DiskIndexer.xcodeproj` from `project.yml` with XcodeGen and runs the XCUITest suite in `apple/UITests`. It uploads the `.xcresult` on failure.
+
+Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.start`, `results`, `status.count`, `job.phase`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
 
 ```bash
 make test

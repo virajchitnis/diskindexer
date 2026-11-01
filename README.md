@@ -48,6 +48,7 @@ The resulting binary is statically linked and requires no runtime dependencies o
 | `make build-linux` | Cross-compile for Linux AMD64 |
 | `make test` | Run all Go tests |
 | `make test-apple` | Run the Swift tests for the macOS app, including end-to-end tests of the app logic against a real `diskindexer serve` |
+| `make coverage` | Run the Go and Swift tests with coverage, and fail if either is below 80% (`COVERAGE_MIN`) |
 | `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
 | `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns` and a 1024 px PNG |
 | `make install` | Build for Linux and copy to the server |
@@ -321,6 +322,24 @@ How the connection works:
 - If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop with advice instead of retrying.
 - If the connection drops, for example when the Mac sleeps, the app notices within about 15 seconds and reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
 - Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
+
+## Testing
+
+- **Go:** `make test`, with tests for the indexer, database, server, CLI commands and TUI. `make coverage-go` fails if coverage across all packages drops below 80%.
+- **macOS app logic:** `make test-apple` runs the Swift tests. Many of them drive the app's model against a real `diskindexer serve`. `make coverage-apple` gates that logic at 80%.
+- **End-to-end UI tests:** `apple/UITests` uses XCUITest to drive the real app: browsing, search and filters, indexing a disk, renaming, drag-to-move with undo, the name-clash alert, and the can't-connect screen. They need full Xcode and run in CI. To run them locally:
+
+  ```bash
+  brew install xcodegen
+  ```
+  ```bash
+  make build && (cd apple/Xcode && xcodegen generate)
+  ```
+  ```bash
+  TEST_RUNNER_DISKINDEXER_BIN="$PWD/diskindexer" xcodebuild test -project apple/Xcode/DiskIndexer.xcodeproj -scheme DiskIndexer -destination 'platform=macOS'
+  ```
+
+CI runs all of these on every pull request.
 
 ## TUI Controls
 
