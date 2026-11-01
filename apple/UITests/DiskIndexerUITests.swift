@@ -102,8 +102,10 @@ final class DiskIndexerUITests: XCTestCase {
 
     // MARK: Helpers
 
-    private var sidebar: XCUIElement { app.outlines.firstMatch }
-    private var results: XCUIElement { app.tables["results"] }
+    // Both the sidebar List and the results Table are exposed as outlines.
+    private var window: XCUIElement { app.windows.firstMatch }
+    private var sidebar: XCUIElement { window.outlines["Sidebar"] }
+    private var results: XCUIElement { window.outlines["results"] }
 
     /// A sidebar row by its text. Disk rows are DisclosureGroup labels,
     /// which macOS exposes as the disclosure triangle's title rather than as
@@ -114,8 +116,14 @@ final class DiskIndexerUITests: XCTestCase {
             .firstMatch
     }
 
-    /// Clicks the matching element that can actually be clicked, e.g. the
-    /// alert's "Rename" button rather than another element with that name.
+    /// Clicks the matching button that can actually be clicked, e.g. the
+    /// alert's "Rename" rather than another element with that name. Only the
+    /// window is searched: the Touch Bar can mirror buttons, and those can't
+    /// be clicked.
+    private func clickButton(_ name: String) {
+        clickHittable(window.buttons, name)
+    }
+
     private func clickHittable(_ query: XCUIElementQuery, _ name: String) {
         let matches = query.matching(identifier: name)
         XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), name)
@@ -226,7 +234,7 @@ final class DiskIndexerUITests: XCTestCase {
         // The alert's text field is focused with the current name.
         app.typeKey("a", modifierFlags: .command)
         app.typeText("Pictures")
-        clickHittable(app.buttons, "Rename")
+        clickButton("Rename")
 
         XCTAssertTrue(sidebarItem("Pictures").waitForExistence(timeout: 10))
         XCTAssertTrue(waitGone(sidebarItem("Photos")))
@@ -238,8 +246,8 @@ final class DiskIndexerUITests: XCTestCase {
         let diskB = sidebarItem("Disk B")
 
         photos.click(forDuration: 0.5, thenDragTo: diskB)
-        XCTAssertTrue(app.buttons["Move"].waitForExistence(timeout: 5), "confirmation before moving")
-        clickHittable(app.buttons, "Move")
+        XCTAssertTrue(window.buttons["Move"].waitForExistence(timeout: 5), "confirmation before moving")
+        clickButton("Move")
 
         // party.jpg only exists in Disk A's Photos, so its Disk column shows
         // where the collection is now.
@@ -261,9 +269,9 @@ final class DiskIndexerUITests: XCTestCase {
 
         music.click(forDuration: 0.5, thenDragTo: sidebarItem("Disk B"))
         // Disk B already has a Music collection: explained, not merged.
-        XCTAssertTrue(app.buttons["OK"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Move"].exists)
-        clickHittable(app.buttons, "OK")
+        XCTAssertTrue(window.buttons["OK"].waitForExistence(timeout: 5))
+        XCTAssertFalse(window.buttons["Move"].exists)
+        clickButton("OK")
     }
 
     func testCouldNotStartServer() {
