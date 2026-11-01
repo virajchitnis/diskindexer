@@ -79,3 +79,35 @@ func randomToken() -> String {
     _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
     return bytes.map { String(format: "%02x", $0) }.joined()
 }
+
+/// A thread-safe Bool, for flags read from Process termination handlers,
+/// which run on a background thread.
+final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool { lock.withLock { value } }
+
+    func set(_ v: Bool) {
+        lock.withLock { value = v }
+    }
+}
+
+/// Wraps a command so it is killed when this app goes away, even on a crash
+/// or force quit: /bin/sh runs it in the background and watches its own stdin,
+/// which the app holds open via a pipe; EOF on that pipe kills the command.
+/// If the command exits by itself, the wrapper exits with its status. (The
+/// watcher gets stdin through fd 3 because non-interactive sh gives background
+/// jobs /dev/null as stdin.)
+func diesWithParent(_ executable: String, _ args: [String]) -> (executable: String, arguments: [String]) {
+    let script = """
+        exec 3<&0
+        "$@" </dev/null & c=$!
+        { cat <&3 >/dev/null; kill $c 2>/dev/null; } &
+        w=$!
+        wait $c; s=$?
+        kill $w 2>/dev/null
+        exit $s
+        """
+    return ("/bin/sh", ["-c", script, "sh", executable] + args)
+}

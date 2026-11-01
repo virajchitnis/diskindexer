@@ -48,6 +48,11 @@ public final class AppModel {
     public var typeFilter: TypeFilter = .all { didSet { if typeFilter != oldValue { scheduleSearch(debounce: false) } } }
     public var sidebarSelection: SidebarItem? = .allDisks { didSet { if sidebarSelection != oldValue { scheduleSearch(debounce: false) } } }
     public private(set) var results: [FileItem] = []
+    /// Bumped whenever `results` is replaced by a different result set. The
+    /// results table is rebuilt on each change instead of having SwiftUI
+    /// insert hundreds of rows into the live table, which makes AppKit warn
+    /// about a reentrant NSTableView delegate (a future assert).
+    public private(set) var resultsGeneration = 0
     public private(set) var capped = false
     public private(set) var searching = false
     public private(set) var searchError: String?
@@ -218,7 +223,12 @@ public final class AppModel {
             counts[f.duplicateKey, default: 0] += 1
         }
         duplicateKeys = Set(counts.filter { $0.value > 1 }.keys)
-        results = files.sorted(using: sortOrder)
+        let sorted = files.sorted(using: sortOrder)
+        // Identical results (e.g. a refresh after a job) keep the table, and
+        // with it the scroll position.
+        guard sorted != results else { return }
+        results = sorted
+        resultsGeneration += 1
         selection = selection.filter { id in results.contains { $0.id == id } }
     }
 

@@ -79,6 +79,9 @@ func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, err
 	if opts.MountPath == "" && len(opts.Collections) == 0 {
 		return nil, fmt.Errorf("a mount path is required unless collections are specified")
 	}
+	if err := ValidateCollectionSpecs(opts.Collections); err != nil {
+		return nil, err
+	}
 
 	disk, err := database.UpsertDisk(opts.DiskLabel, opts.Description)
 	if err != nil {
@@ -452,6 +455,27 @@ func isExcluded(name string, excludes []string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateCollectionSpecs rejects manual collections that would collide:
+// every file is stored as "<disk>/<label>/...", so two specs with the same
+// label would silently overwrite each other's files in the index, and the
+// same folder listed twice would be indexed twice.
+func ValidateCollectionSpecs(specs []CollectionSpec) error {
+	labels := make(map[string]string, len(specs))
+	roots := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		if prev, ok := labels[spec.Label]; ok {
+			return fmt.Errorf("collection %q is listed twice (%s and %s); each collection needs its own name", spec.Label, prev, spec.RootPath)
+		}
+		root := filepath.Clean(spec.RootPath)
+		if prev, ok := roots[root]; ok {
+			return fmt.Errorf("folder %s is listed twice (as %q and %q)", spec.RootPath, prev, spec.Label)
+		}
+		labels[spec.Label] = spec.RootPath
+		roots[root] = spec.Label
+	}
+	return nil
 }
 
 // ParseCollectionSpec parses "Label:/absolute/path" into a CollectionSpec.

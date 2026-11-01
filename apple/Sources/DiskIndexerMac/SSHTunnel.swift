@@ -14,7 +14,9 @@ final class SSHTunnel: Transport {
     var onDisconnect: (@Sendable (String) -> Void)?
 
     private var process: Process?
-    private var stopping = false
+    /// Write end of the wrapper's stdin; closing it stops ssh (see diesWithParent).
+    private var lifeline: Pipe?
+    private let stopping = AtomicFlag()
 
     static let ssh = "/usr/bin/ssh"
     static let defaultSocket = "~/.config/diskindexer/server.sock"
@@ -33,33 +35,37 @@ final class SSHTunnel: Transport {
     }
 
     func connect() async throws -> Endpoint {
-        stopping = false
+        stopping.set(false)
         let socket = try await resolveSocket()
         let port = try freeLoopbackPort()
 
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: Self.ssh)
-        p.arguments = commonOptions + [
+        // Run ssh through a wrapper so the tunnel can't outlive the app.
+        let cmd = diesWithParent(Self.ssh, commonOptions + [
             "-N",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-L", "127.0.0.1:\(port):\(socket)",
             host,
-        ]
-        p.standardInput = FileHandle.nullDevice
+        ])
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: cmd.executable)
+        p.arguments = cmd.arguments
+        let lifeline = Pipe()
+        p.standardInput = lifeline
         p.standardOutput = FileHandle.nullDevice
         let stderr = Pipe()
         p.standardError = stderr
         let errBuf = OutputBuffer(stderr)
         let name = displayName
         p.terminationHandler = { [weak self] _ in
-            guard let self, !self.stopping else { return }
+            guard let self, !self.stopping.isSet else { return }
             let detail = errBuf.text
             self.onDisconnect?(detail.isEmpty ? "SSH connection to \(name) closed." : detail)
         }
         try p.run()
         process = p
+        self.lifeline = lifeline
 
         // Wait for the forward to answer.
         let endpoint = Endpoint(baseURL: URL(string: "http://127.0.0.1:\(port)/")!)
@@ -112,8 +118,11 @@ final class SSHTunnel: Transport {
     }
 
     func disconnect() {
-        stopping = true
-        process?.terminate()
+        stopping.set(true)
+        // EOF on the lifeline makes the wrapper kill ssh; terminating the
+        // wrapper alone would leave ssh running.
+        try? lifeline?.fileHandleForWriting.close()
+        lifeline = nil
         process = nil
     }
 }

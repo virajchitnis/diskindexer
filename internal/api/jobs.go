@@ -134,6 +134,10 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 		opts.Collections = append(opts.Collections, indexer.CollectionSpec{Label: c.Label, RootPath: c.RootPath})
 	}
 
+	if err := indexer.ValidateCollectionSpecs(opts.Collections); err != nil {
+		return Job{}, fmt.Errorf("%w: %v", ErrBadRequest, err)
+	}
+
 	// Check-and-insert under one lock so two requests can't both start.
 	m := s.jobs
 	m.mu.Lock()

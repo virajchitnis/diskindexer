@@ -118,7 +118,7 @@ diskindexer index --disk "Label" --collection "Label:/path" [flags]   # no mount
 | `--force` | Wipe and re-index from scratch |
 | `--db` | Path to `.diskindex` file |
 
-Collections are auto-detected as top-level directories. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
+Collections are auto-detected as top-level directories. Each `--collection` needs its own name and its own folder; a run that lists either twice is refused, since the collections would overwrite each other in the index. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
 
 Use `--exclude` to skip directories by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). Excluded directories and all their contents are omitted from the index.
 
@@ -271,7 +271,8 @@ Searches use the indexes in `known_dbs`, and index runs write to `default_db`, t
 - a disk/collection sidebar;
 - sortable columns;
 - duplicate highlighting;
-- a details inspector.
+- a details inspector;
+- column widths and order that are remembered between launches.
 
 It also manages indexes from the GUI:
 - index and reindex disks with live progress and Cancel;

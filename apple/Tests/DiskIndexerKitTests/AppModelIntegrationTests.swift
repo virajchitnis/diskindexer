@@ -186,6 +186,27 @@ struct AppModelIntegrationTests {
         #expect(model.searchError == nil)
     }
 
+    /// The results table is rebuilt (see resultsGeneration) only when the
+    /// result set changes, so a refresh with the same results keeps the
+    /// table and its scroll position.
+    @Test func resultsGenerationOnlyChangesWithResults() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+        let gen = model.resultsGeneration
+
+        model.scheduleSearch(debounce: false)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(model.resultsGeneration == gen, "same results, same table")
+
+        model.query = "flac"
+        #expect(await eventually { model.results.map(\.name) == ["x.flac"] })
+        #expect(model.resultsGeneration == gen + 1)
+
+        // Re-sorting reorders rows in place; it isn't a new result set.
+        model.sortOrder = [KeyPathComparator(\FileItem.size)]
+        #expect(model.resultsGeneration == gen + 1)
+    }
+
     @Test func sortOrderAppliesToResults() async throws {
         let (model, _) = try await connectedModel()
         defer { model.disconnect() }

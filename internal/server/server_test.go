@@ -280,6 +280,15 @@ func TestAddCollectionWithoutMountPath(t *testing.T) {
 	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "root"}, &res))
 	assert.Len(t, res.Results, 1, "disk-root files survive")
 
+	// The same collection name twice is a 400, not a failed job.
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{
+		Disk: "Disk1",
+		Collections: []api.CollectionSpec{
+			{Label: "Music", RootPath: filepath.Join(copyRoot, "Music")},
+			{Label: "Music", RootPath: copyRoot},
+		},
+	}, nil))
+
 	// Neither a mount path nor collections, or a missing collection folder, is a 400.
 	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Disk1"}, nil))
 	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{

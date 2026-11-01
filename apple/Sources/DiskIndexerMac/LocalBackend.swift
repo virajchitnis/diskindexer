@@ -11,7 +11,7 @@ final class LocalBackend: Transport {
 
     private var process: Process?
     private var stdinPipe: Pipe?
-    private var stopping = false
+    private let stopping = AtomicFlag()
 
     /// The bundled binary, falling back to $DISKINDEXER_BIN or a PATH lookup
     /// so `swift run` works during development.
@@ -37,7 +37,7 @@ final class LocalBackend: Transport {
         guard let bin = Self.binaryURL() else {
             throw ProcessFailure(message: "The diskindexer binary wasn't found in the app bundle or on your PATH.")
         }
-        stopping = false
+        stopping.set(false)
         let token = randomToken()
         let p = Process()
         p.executableURL = bin
@@ -55,7 +55,7 @@ final class LocalBackend: Transport {
         p.standardError = stderr
         let errBuf = OutputBuffer(stderr)
         p.terminationHandler = { [weak self] proc in
-            guard let self, !self.stopping else { return }
+            guard let self, !self.stopping.isSet else { return }
             self.onDisconnect?("diskindexer exited (status \(proc.terminationStatus)). \(errBuf.text)")
         }
         try p.run()
@@ -90,7 +90,7 @@ final class LocalBackend: Transport {
     }
 
     func disconnect() {
-        stopping = true
+        stopping.set(true)
         process?.terminate()
         try? stdinPipe?.fileHandleForWriting.close()
         process = nil

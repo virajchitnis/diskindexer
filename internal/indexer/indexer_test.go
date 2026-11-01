@@ -492,3 +492,28 @@ func TestRun_ReindexAfterMoveDoesNotDuplicate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, colls, 2)
 }
+
+// Two manual collections with the same name would share "<disk>/<label>/..."
+// paths and overwrite each other in the index, so the run is refused before
+// anything is written.
+func TestRun_RejectsDuplicateCollections(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"x/same.txt": "1", "y/same.txt": "22"})
+	x, y := filepath.Join(root, "x"), filepath.Join(root, "y")
+
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", Collections: []indexer.CollectionSpec{
+		{Label: "A", RootPath: x}, {Label: "A", RootPath: y},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `collection "A" is listed twice`)
+
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", Collections: []indexer.CollectionSpec{
+		{Label: "A", RootPath: x}, {Label: "B", RootPath: x + "/"},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is listed twice")
+
+	disks, err := d.ListDisks()
+	require.NoError(t, err)
+	assert.Empty(t, disks, "nothing is written for a rejected run")
+}
