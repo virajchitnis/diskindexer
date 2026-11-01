@@ -20,7 +20,7 @@ make install             # build-linux + scp (via rename) to enterprise.virajchi
 make install-service     # install + systemd user service running `diskindexer serve`
 make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
 make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
-make test-apple          # Swift tests (uses CLT's swift-testing; no Xcode needed)
+make test-apple          # Swift tests incl. AppModel tests against a real `serve` (builds the binary first)
 make release             # build all three platform binaries + gh release create
 make test                # run all tests
 make clean               # remove build artifacts
@@ -34,6 +34,9 @@ go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --
 ```
 
 ## Test
+
+CI (`.github/workflows/ci.yml`) runs on every push to main and every PR: Go vet + race tests and
+cross-compiles on Ubuntu; `make test-apple` and `make mac-app` on macOS (uploads the app zip).
 
 ```bash
 make test

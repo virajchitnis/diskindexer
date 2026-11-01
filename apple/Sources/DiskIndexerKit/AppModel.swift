@@ -244,10 +244,19 @@ public final class AppModel {
     }
 
     public func renameCollection(_ c: Collection, to label: String) async {
-        await perform { try await $0.renameCollection(c, to: label) }
-        if case .collection(c.diskLabel, c.label) = sidebarSelection {
-            sidebarSelection = .collection(disk: c.diskLabel, collection: label)
+        guard let client else { return }
+        do {
+            try await client.renameCollection(c, to: label)
+            // Follow the rename before refreshing, or the refresh sees the old
+            // name is gone and resets the filter to all disks.
+            if case .collection(c.diskLabel, c.label) = sidebarSelection {
+                sidebarSelection = .collection(disk: c.diskLabel, collection: label)
+            }
+        } catch {
+            actionError = error.localizedDescription
         }
+        await refreshMetadata()
+        scheduleSearch(debounce: false)
     }
 
     public func deleteCollection(_ c: Collection) async {

@@ -14,8 +14,10 @@ APP           := build/DiskIndexer.app
 APP_ZIP       := build/DiskIndexer-macOS.zip
 SWIFT_RELEASE := swift build -c release --product DiskIndexerMac
 # Command Line Tools ship swift-testing but not on the default search path.
+# Only add it when CLT is the active toolchain; full Xcode finds its own.
 CLT_DEV       := /Library/Developer/CommandLineTools/Library/Developer
-SWIFT_TEST    := swift test $(if $(wildcard $(CLT_DEV)/Frameworks),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
+CLT_ACTIVE    := $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null))
+SWIFT_TEST    := swift test $(if $(CLT_ACTIVE),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
 .PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app test test-apple clean release
 
@@ -49,8 +51,9 @@ install-service: install
 test:
 	$(GO) test ./...
 
-test-apple:
-	cd apple && $(SWIFT_TEST)
+# The app-model tests drive a real `diskindexer serve`, so build it first.
+test-apple: build
+	cd apple && DISKINDEXER_BIN="$(CURDIR)/$(BINARY)" $(SWIFT_TEST)
 
 # Renders apple/Icon/AppIcon.svg into build/icon/AppIcon.icns (macOS) and
 # build/icon/AppIcon-1024.png (for the future iOS app).
