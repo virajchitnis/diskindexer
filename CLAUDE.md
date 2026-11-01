@@ -19,6 +19,7 @@ make build-darwin-amd64  # cross-compile for macOS Intel
 make install             # build-linux + scp (via rename) to enterprise.virajchitnis.com
 make install-service     # install + systemd user service running `diskindexer serve`
 make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
+make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
 make test-apple          # Swift tests (uses CLT's swift-testing; no Xcode needed)
 make release             # build all three platform binaries + gh release create
 make test                # run all tests

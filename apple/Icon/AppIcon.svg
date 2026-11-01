@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- DiskIndexer app icon: a tilted open hard drive under a magnifying glass.
+       Source of truth for every platform; `make icon` renders the sizes.
+       Drawn on the macOS grid: an 824px rounded square centred in 1024. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="caseEdge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#374151"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="caseRim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9CA3AF"/>
+      <stop offset="1" stop-color="#4B5563"/>
+    </linearGradient>
+    <linearGradient id="caseFace" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F3F4F6"/>
+      <stop offset="0.55" stop-color="#D1D5DB"/>
+      <stop offset="1" stop-color="#9CA3AF"/>
+    </linearGradient>
+    <radialGradient id="platter" cx="0.38" cy="0.32" r="0.8">
+      <stop offset="0" stop-color="#9CA3AF"/>
+      <stop offset="0.45" stop-color="#6B7280"/>
+      <stop offset="1" stop-color="#374151"/>
+    </radialGradient>
+    <linearGradient id="arm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4B5563"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0.35" cy="0.3" r="0.85">
+      <stop offset="0" stop-color="#E0F2FE" stop-opacity="0.55"/>
+      <stop offset="0.6" stop-color="#7DD3FC" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#0EA5E9" stop-opacity="0.35"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7DD3FC"/>
+      <stop offset="0.5" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0369A1"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#075985"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background tile -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"/>
+
+  <!-- Everything below is drawn in the 130-unit sketch space, scaled onto the grid -->
+  <g transform="translate(100 100) scale(6.3385)">
+    <!-- Soft shadow under the drive -->
+    <ellipse cx="62" cy="113" rx="42" ry="5.5" fill="#000000" opacity="0.35"/>
+
+    <g transform="rotate(-12 58 64)">
+      <!-- Case thickness, rim and face -->
+      <rect x="16" y="26" width="80" height="92" rx="10" fill="url(#caseEdge)"/>
+      <rect x="16" y="22" width="80" height="92" rx="10" fill="url(#caseRim)"/>
+      <rect x="20" y="26" width="72" height="84" rx="8" fill="url(#caseFace)"/>
+      <!-- Screws -->
+      <g fill="#6B7280">
+        <circle cx="25" cy="31" r="1.7"/><circle cx="87" cy="31" r="1.7"/>
+        <circle cx="25" cy="105" r="1.7"/><circle cx="87" cy="105" r="1.7"/>
+      </g>
+      <!-- Platter with tracks and a reflection -->
+      <circle cx="56" cy="60" r="27.5" fill="#1F2937"/>
+      <circle cx="56" cy="60" r="27" fill="url(#platter)"/>
+      <circle cx="56" cy="60" r="21" fill="none" stroke="#9CA3AF" stroke-opacity="0.45" stroke-width="0.6"/>
+      <circle cx="56" cy="60" r="16" fill="none" stroke="#9CA3AF" stroke-opacity="0.4" stroke-width="0.6"/>
+      <circle cx="56" cy="60" r="11" fill="none" stroke="#9CA3AF" stroke-opacity="0.35" stroke-width="0.6"/>
+      <path d="M36 47 A23 23 0 0 1 60 37" fill="none" stroke="#F3F4F6" stroke-opacity="0.55" stroke-width="2.6" stroke-linecap="round"/>
+      <circle cx="56" cy="60" r="6" fill="#E5E7EB"/>
+      <circle cx="56" cy="60" r="2.2" fill="#6B7280"/>
+      <!-- Read arm on its pivot -->
+      <path d="M82 98 L65 69" stroke="url(#arm)" stroke-width="5.2" stroke-linecap="round"/>
+      <path d="M66.5 71.5 L63.5 66.5" stroke="#F59E0B" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="82" cy="98" r="6" fill="#1F2937"/>
+      <circle cx="82" cy="98" r="2.6" fill="#6B7280"/>
+    </g>
+
+    <!-- Magnifying glass -->
+    <line x1="107" y1="95" x2="118" y2="108" stroke="#020617" stroke-opacity="0.5" stroke-width="11" stroke-linecap="round" transform="translate(1.2 1.6)"/>
+    <line x1="107" y1="95" x2="118" y2="108" stroke="url(#handle)" stroke-width="9.5" stroke-linecap="round"/>
+    <circle cx="92" cy="80" r="21" fill="url(#glass)"/>
+    <circle cx="92" cy="80" r="21" fill="none" stroke="url(#rim)" stroke-width="7"/>
+    <circle cx="92" cy="80" r="24.2" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="0.8"/>
+    <path d="M78.5 72 A14.5 14.5 0 0 1 90 64.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="76.8" cy="77.5" r="1.4" fill="#FFFFFF" fill-opacity="0.75"/>
+  </g>
+</svg>

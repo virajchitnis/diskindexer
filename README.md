@@ -49,6 +49,7 @@ The resulting binary is statically linked and requires no runtime dependencies o
 | `make test` | Run all Go tests |
 | `make test-apple` | Run the Swift tests for the macOS app |
 | `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
+| `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns` and a 1024 px PNG |
 | `make install` | Build for Linux and copy to the server |
 | `make install-service` | `install`, then set up and restart the `diskindexer serve` systemd user service on the server |
 | `make clean` | Remove build artifacts |

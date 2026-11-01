@@ -6,6 +6,8 @@
 	<string>DiskIndexer</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.virajchitnis.diskindexer</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleName</key>
 	<string>DiskIndexer</string>
 	<key>CFBundleDisplayName</key>
