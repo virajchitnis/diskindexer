@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   go:
-    name: Go tests
+    name: Go tests and coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,8 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test -race ./...
+      # Fails below 80% (COVERAGE_MIN), counted across all packages.
+      - run: make coverage-go
       - name: Cross-compile release binaries
         run: make build-linux build-darwin-arm64 build-darwin-amd64
 
@@ -34,11 +36,43 @@ jobs:
         with:
           go-version-file: go.mod
       - run: swift --version
-      # Unit tests plus AppModel integration tests against a real `diskindexer serve`.
-      - run: make test-apple
+      # Unit and AppModel integration tests (against a real `diskindexer
+      # serve`), with coverage; fails below 80% for the app logic.
+      - run: make coverage-apple
       - run: make mac-app
       - uses: actions/upload-artifact@v4
         with:
           name: DiskIndexer-macOS
           path: build/DiskIndexer-macOS.zip
           if-no-files-found: error
+
+  ui-tests:
+    name: macOS UI tests (XCUITest)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: brew install xcodegen
+      # The app runs this binary in local mode; the tests use it to index fixtures.
+      - run: make build
+      - name: Generate the Xcode project
+        working-directory: apple/Xcode
+        run: xcodegen generate
+      - name: Run UI tests
+        env:
+          # xcodebuild passes TEST_RUNNER_* to the test runner without the prefix.
+          TEST_RUNNER_DISKINDEXER_BIN: ${{ github.workspace }}/diskindexer
+        run: |
+          xcodebuild test \
+            -project apple/Xcode/DiskIndexer.xcodeproj \
+            -scheme DiskIndexer \
+            -destination 'platform=macOS' \
+            -resultBundlePath build/UITests.xcresult
+      - name: Upload test results (screenshots on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UITests.xcresult
+          path: build/UITests.xcresult

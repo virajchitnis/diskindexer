@@ -214,6 +214,7 @@ struct StatusBar: View {
                 Text(err).foregroundStyle(.red).lineLimit(1)
             } else {
                 Text(countText)
+                    .accessibilityIdentifier("status.count")
             }
             Spacer()
             if let job = model.runningJobs.first {

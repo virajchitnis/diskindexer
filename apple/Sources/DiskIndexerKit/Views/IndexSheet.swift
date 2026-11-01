@@ -119,11 +119,13 @@ struct IndexSheet: View {
                 Section {
                     TextField("Disk label", text: $draft.disk, prompt: Text("e.g. Archive 4TB"))
                         .disabled(draft.mode != .newDisk)
+                        .accessibilityIdentifier("index.diskLabel")
                     if draft.mode != .addCollection {
                         TextField("Description", text: $draft.description, prompt: Text("Optional"))
                         HStack {
                             TextField("Mount path", text: $draft.mountPath,
                                       prompt: Text(draft.autoCollections ? mountPrompt : "Optional"))
+                                .accessibilityIdentifier("index.mountPath")
                             Button("Browse…") { browse(.mount) }
                         }
                     }
@@ -191,6 +193,7 @@ struct IndexSheet: View {
                 Button("Cancel", role: .cancel) { onDone(false) }
                     .keyboardShortcut(.cancelAction)
                 Button(startTitle) { start() }
+                    .accessibilityIdentifier("index.start")
                     .keyboardShortcut(.defaultAction)
                     .disabled(!draft.isValid || starting)
             }

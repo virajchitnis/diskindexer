@@ -57,6 +57,7 @@ struct ResultsTable: View {
         }
         // See AppModel.resultsGeneration.
         .id(model.resultsGeneration)
+        .accessibilityIdentifier("results")
         .contextMenu(forSelectionType: FileItem.ID.self) { ids in
             let files = model.results.filter { ids.contains($0.id) }
             Button(files.count > 1 ? "Copy \(files.count) Paths" : "Copy Path") {

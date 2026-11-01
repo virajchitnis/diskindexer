@@ -62,6 +62,7 @@ struct JobRow: View {
                 }
                 HStack {
                     Text(job.phaseTitle)
+                        .accessibilityIdentifier("job.phase")
                         .foregroundStyle(job.state == .failed ? .red : (job.errorCount > 0 || job.state == .interrupted) ? .orange : .primary)
                     Spacer()
                     Text(detail(now: ctx.date))

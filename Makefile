@@ -24,7 +24,7 @@ CLT_DEV       := /Library/Developer/CommandLineTools/Library/Developer
 CLT_ACTIVE    := $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null))
 SWIFT_TEST    := swift test $(if $(CLT_ACTIVE),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app test test-apple clean release
+.PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app test test-apple coverage coverage-go coverage-apple clean release
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) .
@@ -59,6 +59,22 @@ test:
 # The app-model tests drive a real `diskindexer serve`, so build it first.
 test-apple: build
 	cd apple && DISKINDEXER_BIN="$(CURDIR)/$(BINARY)" $(SWIFT_TEST)
+
+# Coverage gates (CI runs both). Go counts every package, across package
+# boundaries; Swift counts the app logic in DiskIndexerKit (views are
+# exercised by the UI tests instead).
+COVERAGE_MIN ?= 80
+
+coverage: coverage-go coverage-apple
+
+# Cross-package coverage shells out to `go`, so make sure it's on PATH.
+coverage-go:
+	PATH="$(dir $(GO)):$$PATH" $(GO) test -coverpkg=./... -coverprofile=coverage.out ./...
+	PATH="$(dir $(GO)):$$PATH" scripts/check-coverage.sh go coverage.out $(COVERAGE_MIN)
+
+coverage-apple: build
+	cd apple && DISKINDEXER_BIN="$(CURDIR)/$(BINARY)" $(SWIFT_TEST) --enable-code-coverage
+	scripts/check-coverage.sh swift apple $(COVERAGE_MIN)
 
 # Renders apple/Icon/AppIcon.svg into build/icon/AppIcon.icns (macOS) and
 # build/icon/AppIcon-1024.png (for the future iOS app).
@@ -95,4 +111,4 @@ release: build-linux build-darwin-arm64 build-darwin-amd64 mac-app
 
 clean:
 	rm -f $(BINARY) $(BINARY_LINUX) $(BINARY_DARWIN_ARM64) $(BINARY_DARWIN_AMD64)
-	rm -rf build apple/.build
+	rm -rf build apple/.build coverage.out
