@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
     @Bindable var model: AppModel
     var onReindex: (DiskNode) -> Void
+    var onAddCollection: (DiskNode) -> Void
 
     @State private var expanded: Set<String> = []
     @State private var renaming: Collection?
@@ -90,6 +91,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func diskMenu(_ node: DiskNode) -> some View {
         Button("Reindex…") { onReindex(node) }
+        Button("Add Collection…") { onAddCollection(node) }
         Divider()
         Button("Delete…", role: .destructive) { deletingDisk = node }
     }

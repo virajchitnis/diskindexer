@@ -218,6 +218,28 @@ struct AppModelIntegrationTests {
         #expect(await eventually { model.results.isEmpty })
     }
 
+    @Test func addCollectionToExistingDiskWithoutMountPath() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+
+        // A copy of a collection that lives elsewhere on the server, with a
+        // stray file next to it that must not end up on the disk.
+        let copyRoot = try makeDisk(["Photos/beach.jpg": "sand", "stray.txt": "x"])
+        var draft = IndexDraft(addingTo: model.diskNodes[0])
+        draft.collections[0].label = "Photos"
+        draft.collections[0].path = (copyRoot as NSString).appendingPathComponent("Photos")
+        #expect(draft.isValid)
+        try await model.startIndex(draft.request)
+
+        #expect(await eventually { model.jobs.first?.state == .done })
+        #expect(model.jobs.first?.stats?.deleted == 0)
+        #expect(await eventually { model.diskNodes[0].collections.map(\.label) == ["Backup", "Movies", "Music", "Photos"] })
+        #expect(await eventually { model.results.contains { $0.path == "Disk1/Photos/beach.jpg" } })
+        #expect(!model.results.contains { $0.name == "stray.txt" })
+        // Everything indexed before is still there.
+        #expect(model.results.count == 9)
+    }
+
     @Test func reconnectsAfterServerDies() async throws {
         let (model, transport) = try await connectedModel()
         defer { model.disconnect() }

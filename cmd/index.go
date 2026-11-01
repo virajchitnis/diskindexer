@@ -19,23 +19,27 @@ var (
 )
 
 var indexCmd = &cobra.Command{
-	Use:   "index <mount-path>",
+	Use:   "index [mount-path]",
 	Short: "Index a disk (incremental if seen before, full on first run)",
 	Long: `Walks the filesystem at <mount-path> and records file metadata into the
 index. On the first run this is a full index; subsequent runs update only
 changed, new, or deleted files.
 
 Collections are auto-detected as top-level directories. Use --collection to
-override with manually specified paths.`,
-	Args: cobra.ExactArgs(1),
+override with manually specified paths.
+
+The mount path may be omitted when --collection is given, e.g. to add a copy
+of a collection stored elsewhere to a disk that isn't plugged in. The disk's
+other collections and its root-level files are left untouched.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runIndex,
 }
 
 var reindexCmd = &cobra.Command{
-	Use:   "reindex",
+	Use:   "reindex [mount-path]",
 	Short: "Alias for 'index' — explicit incremental re-index of a disk",
 	Long:  `Runs an incremental update on a previously indexed disk. Identical to 'index' but makes intent clear in scripts and cron jobs.`,
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runIndex,
 }
 
@@ -54,13 +58,18 @@ func init() {
 }
 
 func runIndex(cmd *cobra.Command, args []string) error {
-	mountPath := args[0]
-	info, err := os.Stat(mountPath)
-	if err != nil {
-		return fmt.Errorf("mount path %q: %w", mountPath, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("mount path %q is a file, not a directory", mountPath)
+	var mountPath string
+	if len(args) == 1 {
+		mountPath = args[0]
+		info, err := os.Stat(mountPath)
+		if err != nil {
+			return fmt.Errorf("mount path %q: %w", mountPath, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("mount path %q is a file, not a directory", mountPath)
+		}
+	} else if len(indexCollections) == 0 {
+		return fmt.Errorf("a mount path is required unless --collection is given")
 	}
 
 	var collSpecs []indexer.CollectionSpec

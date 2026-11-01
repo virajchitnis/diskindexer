@@ -50,7 +50,7 @@ struct JobRow: View {
                             .controlSize(.small)
                     }
                 }
-                Text(job.request.mountPath)
+                Text(job.sourceDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

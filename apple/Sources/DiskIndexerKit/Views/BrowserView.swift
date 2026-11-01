@@ -31,6 +31,8 @@ public struct BrowserView: View {
         NavigationSplitView {
             SidebarView(model: model, onReindex: { node in
                 indexDraft = IndexDraft(node: node)
+            }, onAddCollection: { node in
+                indexDraft = IndexDraft(addingTo: node)
             })
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } detail: {

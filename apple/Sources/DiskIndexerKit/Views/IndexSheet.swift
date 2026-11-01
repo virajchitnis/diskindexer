@@ -2,7 +2,16 @@ import SwiftUI
 
 /// Editable state for the Index Disk sheet.
 struct IndexDraft: Identifiable {
+    enum Mode {
+        case newDisk
+        case reindex
+        /// Add collections stored anywhere on the server to an existing disk,
+        /// without its mount path (the disk itself needn't be plugged in).
+        case addCollection
+    }
+
     let id = UUID()
+    var mode = Mode.newDisk
     var disk = ""
     var description = ""
     var mountPath = ""
@@ -10,7 +19,8 @@ struct IndexDraft: Identifiable {
     var collections: [EditableCollection] = []
     var excludes = ""
     var force = false
-    var isReindex = false
+
+    var isReindex: Bool { mode == .reindex }
 
     init() {}
 
@@ -19,11 +29,26 @@ struct IndexDraft: Identifiable {
     init(node: DiskNode) {
         disk = node.label
         description = node.disks.first?.description ?? ""
-        isReindex = true
+        mode = .reindex
         mountPath = node.guessedMountPath ?? ""
         if node.guessedMountPath == nil && !node.collections.isEmpty {
             autoCollections = false
             collections = node.collections.map { EditableCollection(label: $0.label, path: $0.rootPath) }
+        }
+    }
+
+    init(addingTo node: DiskNode) {
+        disk = node.label
+        mode = .addCollection
+        autoCollections = false
+        collections = [EditableCollection(label: "", path: "")]
+    }
+
+    var title: String {
+        switch mode {
+        case .newDisk: "Index a Disk"
+        case .reindex: "Reindex \u{201C}\(disk)\u{201D}"
+        case .addCollection: "Add Collection to \u{201C}\(disk)\u{201D}"
         }
     }
 
@@ -34,7 +59,9 @@ struct IndexDraft: Identifiable {
             .map { CollectionSpec(label: $0.label, rootPath: $0.path) }
         return IndexRequest(
             disk: disk.trimmingCharacters(in: .whitespaces),
-            mountPath: mountPath,
+            // Listed collections don't need the disk's root; leaving it out
+            // keeps the disk's root files and other collections untouched.
+            mountPath: mode == .addCollection ? "" : mountPath,
             description: description.isEmpty ? nil : description,
             collections: colls.isEmpty ? nil : colls,
             excludes: ex.isEmpty ? nil : ex,
@@ -43,8 +70,10 @@ struct IndexDraft: Identifiable {
     }
 
     var isValid: Bool {
-        !disk.trimmingCharacters(in: .whitespaces).isEmpty && !mountPath.isEmpty
-            && (autoCollections || collections.contains { !$0.label.isEmpty && !$0.path.isEmpty })
+        let hasCollection = collections.contains { !$0.label.isEmpty && !$0.path.isEmpty }
+        guard !disk.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        // Auto-detection walks the mount path; listed collections stand alone.
+        return autoCollections ? !mountPath.isEmpty : hasCollection
     }
 }
 
@@ -82,22 +111,31 @@ struct IndexSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Text(draft.title)
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding([.horizontal, .top], 20)
             Form {
                 Section {
                     TextField("Disk label", text: $draft.disk, prompt: Text("e.g. Archive 4TB"))
-                        .disabled(draft.isReindex)
-                    TextField("Description", text: $draft.description, prompt: Text("Optional"))
-                    HStack {
-                        TextField("Mount path", text: $draft.mountPath, prompt: Text(mountPrompt))
-                        Button("Browse…") { browse(.mount) }
+                        .disabled(draft.mode != .newDisk)
+                    if draft.mode != .addCollection {
+                        TextField("Description", text: $draft.description, prompt: Text("Optional"))
+                        HStack {
+                            TextField("Mount path", text: $draft.mountPath,
+                                      prompt: Text(draft.autoCollections ? mountPrompt : "Optional"))
+                            Button("Browse…") { browse(.mount) }
+                        }
                     }
                 } footer: {
-                    Text("Indexing runs on \(model.transport?.displayName ?? "the server") and keeps going if this app disconnects.")
+                    Text(headerFooter)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Collections") {
-                    Toggle("Use top-level folders as collections", isOn: $draft.autoCollections)
+                Section {
+                    if draft.mode != .addCollection {
+                        Toggle("Use top-level folders as collections", isOn: $draft.autoCollections)
+                    }
                     if !draft.autoCollections {
                         ForEach($draft.collections) { $c in
                             HStack {
@@ -117,11 +155,26 @@ struct IndexSheet: View {
                             draft.collections.append(EditableCollection(label: "", path: ""))
                         }
                     }
+                } header: {
+                    Text("Collections")
+                } footer: {
+                    if !draft.autoCollections {
+                        Text("A collection's folder can be anywhere on \(model.transport?.displayName ?? "the server"), such as a copy of a folder from this disk. Its files are stored under \u{201C}\(draft.disk.isEmpty ? "Disk" : draft.disk)/Label/\u{2026}\u{201D}.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                Section("Options") {
-                    TextField("Exclude folders", text: $draft.excludes, prompt: Text(".snapshots, *.cache"))
-                    Toggle("Rebuild from scratch (wipe this disk's index first)", isOn: $draft.force)
+                if draft.mode != .addCollection {
+                    Section("Options") {
+                        TextField("Exclude folders", text: $draft.excludes, prompt: Text(".snapshots, *.cache"))
+                        Toggle("Rebuild from scratch (wipe this disk's index first)", isOn: $draft.force)
+                    }
+                }
+
+                if draft.mode == .addCollection {
+                    Section {
+                        TextField("Exclude folders", text: $draft.excludes, prompt: Text(".snapshots, *.cache"))
+                    }
                 }
 
                 if let error {
@@ -137,7 +190,7 @@ struct IndexSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { onDone(false) }
                     .keyboardShortcut(.cancelAction)
-                Button(draft.isReindex ? "Reindex" : "Start Indexing") { start() }
+                Button(startTitle) { start() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!draft.isValid || starting)
             }
@@ -150,6 +203,25 @@ struct IndexSheet: View {
                 browsing = nil
             }
         }
+    }
+
+    private var startTitle: String {
+        switch draft.mode {
+        case .newDisk: "Start Indexing"
+        case .reindex: "Reindex"
+        case .addCollection: "Add and Index"
+        }
+    }
+
+    private var headerFooter: String {
+        let server = model.transport?.displayName ?? "the server"
+        if draft.mode == .addCollection {
+            return "The disk doesn't need to be plugged in. Its other collections and root-level files are left as they are. Indexing runs on \(server)."
+        }
+        if !draft.autoCollections && draft.mountPath.isEmpty {
+            return "Without a mount path, only the listed collections are indexed and the disk's other collections and root-level files are left as they are."
+        }
+        return "Indexing runs on \(server) and keeps going if this app disconnects."
     }
 
     private var mountPrompt: String {

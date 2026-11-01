@@ -100,7 +100,7 @@ known_dbs = [
 ## CLI Commands
 
 ```bash
-diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--exclude name] [--force]
+diskindexer index [mount-path] --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--exclude name] [--force]   # mount-path optional with --collection
 diskindexer reindex <mount-path> --disk "Label" [--db path] [--exclude name]
 diskindexer disks [--db path]
 diskindexer delete-disk --disk "Label" [--db path]
@@ -147,6 +147,7 @@ When a directory is selected in the TUI, allow the user to "enter" it and view i
 - **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
 - **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
 - **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
+- **No mount path**: with `--collection` and no mount path, `walkRoot` is skipped and the disk's root-level files (no collection) are never deleted; unlisted collections are preserved as always. This backs the app's "Add Collection…" for disks that aren't plugged in.
 - **Install target**: `make install` cross-compiles for Linux AMD64 and deploys to `~/.local/bin/diskindexer` on `enterprise.virajchitnis.com` via `scp`.
 
 ## Libraries

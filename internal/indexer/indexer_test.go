@@ -409,3 +409,54 @@ func TestRunContext_Cancelled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, files)
 }
+
+// Adding a copy of a collection that lives elsewhere to a disk that isn't
+// plugged in: no mount path, so the disk's root files and other collections
+// must survive.
+func TestRun_AddCollectionWithoutMountPath(t *testing.T) {
+	d := openTestDB(t)
+	disk := makeDisk(t, map[string]string{
+		"readme.txt":      "root file",
+		"Photos/a.jpg":    "a",
+		"Videos/clip.mp4": "clip",
+	})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "Test Disk", MountPath: disk})
+	require.NoError(t, err)
+
+	copyRoot := makeDisk(t, map[string]string{
+		"Music/song.flac": "song",
+		"loose.txt":       "not part of the disk",
+	})
+	stats, err := indexer.Run(d, indexer.Options{
+		DiskLabel:   "Test Disk",
+		Collections: []indexer.CollectionSpec{{Label: "Music", RootPath: filepath.Join(copyRoot, "Music")}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, stats.Deleted)
+
+	fileMap, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	for _, p := range []string{
+		"Test Disk/readme.txt",
+		"Test Disk/Photos/a.jpg",
+		"Test Disk/Videos/clip.mp4",
+		"Test Disk/Music/song.flac",
+	} {
+		assert.Contains(t, fileMap, p)
+	}
+	assert.NotContains(t, fileMap, "Test Disk/loose.txt")
+
+	colls, err := d.ListCollections(1)
+	require.NoError(t, err)
+	assert.Len(t, colls, 3)
+}
+
+func TestRun_NoMountPathNoCollections(t *testing.T) {
+	d := openTestDB(t)
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "Test Disk"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mount path is required")
+	disks, err := d.ListDisks()
+	require.NoError(t, err)
+	assert.Empty(t, disks, "a rejected run must not create the disk")
+}

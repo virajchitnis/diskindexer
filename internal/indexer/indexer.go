@@ -22,7 +22,11 @@ type CollectionSpec struct {
 type Options struct {
 	DiskLabel   string
 	Description string
-	MountPath   string
+	// MountPath is the disk's root. It may be empty when Collections is set,
+	// e.g. to add a copy of a collection that lives elsewhere to a disk that
+	// isn't plugged in; files at the disk root are then neither indexed nor
+	// removed.
+	MountPath string
 	// Collections overrides auto-detection when non-empty.
 	Collections []CollectionSpec
 	// Force wipes existing data before re-indexing from scratch.
@@ -71,6 +75,10 @@ func Run(database *db.DB, opts Options) (*Stats, error) {
 // kept, as with an interrupted CLI run.
 func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, error) {
 	start := time.Now()
+
+	if opts.MountPath == "" && len(opts.Collections) == 0 {
+		return nil, fmt.Errorf("a mount path is required unless collections are specified")
+	}
 
 	disk, err := database.UpsertDisk(opts.DiskLabel, opts.Description)
 	if err != nil {
@@ -130,8 +138,10 @@ func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, err
 		_ = database.UpdateCollectionIndexedAt(coll.ID, time.Now())
 	}
 
-	if err := walkRoot(ctx, database, disk.ID, opts.MountPath, opts.DiskLabel, colls, fileMap, seenPaths, stats); err != nil {
-		return nil, fmt.Errorf("walk root: %w", err)
+	if opts.MountPath != "" {
+		if err := walkRoot(ctx, database, disk.ID, opts.MountPath, opts.DiskLabel, colls, fileMap, seenPaths, stats); err != nil {
+			return nil, fmt.Errorf("walk root: %w", err)
+		}
 	}
 
 	// Build the set of collection IDs walked this run so we only delete stale
@@ -153,6 +163,9 @@ func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, err
 			if _, walked := walkedCollIDs[*f.CollectionID]; !walked {
 				continue
 			}
+		} else if opts.MountPath == "" {
+			// Disk-root files: only a run that walked the root may remove them.
+			continue
 		}
 		toDelete = append(toDelete, path)
 	}

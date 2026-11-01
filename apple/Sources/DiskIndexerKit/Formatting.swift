@@ -73,3 +73,12 @@ public extension Job {
         }
     }
 }
+
+public extension Job {
+    /// What the job is reading from: the mount path, or the listed collection
+    /// folders when it was started without one.
+    var sourceDescription: String {
+        if !request.mountPath.isEmpty { return request.mountPath }
+        return (request.collections ?? []).map(\.rootPath).joined(separator: ", ")
+    }
+}

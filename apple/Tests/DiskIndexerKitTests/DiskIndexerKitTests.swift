@@ -58,4 +58,29 @@ struct DiskIndexerKitTests {
         let manual = DiskNode(label: "D", disks: [], collections: [coll("/media/a/Movies"), coll("/srv/other")])
         #expect(manual.guessedMountPath == nil)
     }
+
+    @Test func testIndexDraftRules() {
+        let node = DiskNode(label: "D", disks: [], collections: [])
+
+        var add = IndexDraft(addingTo: node)
+        #expect(!add.isValid, "needs a collection")
+        add.collections[0] = EditableCollection(label: "Music", path: "/srv/Music")
+        add.mountPath = "/should/be/ignored"
+        #expect(add.isValid)
+        #expect(add.request.mountPath == "")
+        #expect(add.request.collections == [CollectionSpec(label: "Music", rootPath: "/srv/Music")])
+        #expect(add.request.force == nil)
+        #expect(add.title == "Add Collection to \u{201C}D\u{201D}")
+
+        var new = IndexDraft()
+        new.disk = "D"
+        #expect(!new.isValid, "auto collections need a mount path")
+        new.mountPath = "/media/d"
+        #expect(new.isValid)
+        new.autoCollections = false
+        #expect(!new.isValid, "manual mode needs a collection")
+        new.collections = [EditableCollection(label: "A", path: "/a")]
+        new.mountPath = ""
+        #expect(new.isValid, "mount path is optional with listed collections")
+    }
 }

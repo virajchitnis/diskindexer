@@ -106,6 +106,7 @@ Walk a mounted disk and record file metadata.
 
 ```bash
 diskindexer index <mount-path> --disk "Label" [flags]
+diskindexer index --disk "Label" --collection "Label:/path" [flags]   # no mount path
 ```
 
 | Flag | Description |
@@ -137,7 +138,12 @@ diskindexer index /Volumes/Seagate --disk "Seagate 4TB" \
 
 # Force a full re-index
 diskindexer index /Volumes/Seagate --disk "Seagate 4TB" --force
+
+# Add a copy of a collection stored elsewhere to a disk that isn't plugged in
+diskindexer index --disk "Seagate 4TB" --collection "Photos:/srv/copies/Photos"
 ```
+
+The mount path can be left out when `--collection` is given. This is for adding a collection to an existing disk without the disk itself, for example from a copy of the folder kept on a server. Only the listed collections are indexed. Files are stored as if they were on the disk (`Seagate 4TB/Photos/…`), and the disk's other collections and root-level files are left untouched.
 
 Each subsequent `index` run is incremental — only changed, new, or deleted files are processed.
 
@@ -256,6 +262,7 @@ Searches use the indexes in `known_dbs`, and index runs write to `default_db`, t
 
 It also manages indexes from the GUI:
 - index and reindex disks with live progress and Cancel;
+- add a collection to an existing disk without the disk plugged in (right-click the disk → **Add Collection…**), e.g. from a copy of the folder on the server;
 - rename and delete collections;
 - delete disks.
 

@@ -255,3 +255,33 @@ func TestFSList(t *testing.T) {
 	require.Equal(t, http.StatusOK, h.do("GET", "/v1/fs/roots", nil, &roots))
 	assert.NotEmpty(t, roots)
 }
+
+func TestAddCollectionWithoutMountPath(t *testing.T) {
+	h := newHarness(t, "")
+	disk := makeDisk(t, map[string]string{"root.txt": "r", "Photos/a.jpg": "a"})
+	require.Equal(t, api.JobDone, h.index(disk).State)
+
+	copyRoot := makeDisk(t, map[string]string{"Music/song.flac": "s"})
+	var j api.Job
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs", api.IndexRequest{
+		Disk:        "Disk1",
+		Collections: []api.CollectionSpec{{Label: "Music", RootPath: filepath.Join(copyRoot, "Music")}},
+	}, &j))
+	j = h.waitJob(j.ID)
+	require.Equal(t, api.JobDone, j.State, j.Error)
+	assert.Equal(t, 0, j.Stats.Deleted)
+
+	var colls []api.Collection
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/collections?disk=Disk1", nil, &colls))
+	assert.Len(t, colls, 2)
+	var res api.SearchResponse
+	require.Equal(t, http.StatusOK, h.do("POST", "/v1/search", api.SearchRequest{Query: "root"}, &res))
+	assert.Len(t, res.Results, 1, "disk-root files survive")
+
+	// Neither a mount path nor collections, or a missing collection folder, is a 400.
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{Disk: "Disk1"}, nil))
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/jobs", api.IndexRequest{
+		Disk:        "Disk1",
+		Collections: []api.CollectionSpec{{Label: "Gone", RootPath: "/does/not/exist"}},
+	}, nil))
+}

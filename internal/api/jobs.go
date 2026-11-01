@@ -96,12 +96,20 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 	if req.Disk == "" {
 		return Job{}, fmt.Errorf("%w: disk label is required", ErrBadRequest)
 	}
-	info, err := os.Stat(req.MountPath)
-	if err != nil {
-		return Job{}, fmt.Errorf("%w: mount path %q: %v", ErrBadRequest, req.MountPath, err)
-	}
-	if !info.IsDir() {
-		return Job{}, fmt.Errorf("%w: mount path %q is not a directory", ErrBadRequest, req.MountPath)
+	// The mount path is optional when collections are listed, e.g. adding a
+	// copy of a collection to a disk that isn't plugged in.
+	if req.MountPath == "" {
+		if len(req.Collections) == 0 {
+			return Job{}, fmt.Errorf("%w: a mount path is required unless collections are listed", ErrBadRequest)
+		}
+	} else {
+		info, err := os.Stat(req.MountPath)
+		if err != nil {
+			return Job{}, fmt.Errorf("%w: mount path %q: %v", ErrBadRequest, req.MountPath, err)
+		}
+		if !info.IsDir() {
+			return Job{}, fmt.Errorf("%w: mount path %q is not a directory", ErrBadRequest, req.MountPath)
+		}
 	}
 	dbPath, _, err := s.resolveDB(req.DB)
 	if err != nil {
@@ -119,6 +127,9 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 	for _, c := range req.Collections {
 		if c.Label == "" || c.RootPath == "" {
 			return Job{}, fmt.Errorf("%w: collections need a label and a path", ErrBadRequest)
+		}
+		if info, err := os.Stat(c.RootPath); err != nil || !info.IsDir() {
+			return Job{}, fmt.Errorf("%w: collection %q: %q is not a directory", ErrBadRequest, c.Label, c.RootPath)
 		}
 		opts.Collections = append(opts.Collections, indexer.CollectionSpec{Label: c.Label, RootPath: c.RootPath})
 	}

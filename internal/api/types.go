@@ -87,7 +87,7 @@ type IndexRequest struct {
 	DB          string           `json:"db,omitempty"` // "" = default DB
 	Disk        string           `json:"disk"`
 	Description string           `json:"description,omitempty"`
-	MountPath   string           `json:"mountPath"`
+	MountPath   string           `json:"mountPath"` // "" allowed when Collections is set
 	Collections []CollectionSpec `json:"collections,omitempty"`
 	Excludes    []string         `json:"excludes,omitempty"`
 	Force       bool             `json:"force,omitempty"`
