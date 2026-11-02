@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -34,6 +35,8 @@ type Service struct {
 	// DefaultExcludes apply to every index run unless a request opts out
 	// (config default_excludes).
 	DefaultExcludes []string
+	// Persistent: see Info.Persistent. nil when unknown.
+	Persistent *bool
 }
 
 // NewService opens defaultDB plus every path in dbPaths. defaultDB is where
@@ -77,8 +80,13 @@ func (s *Service) Info() Info {
 	if defaults == nil {
 		defaults = []string{}
 	}
+	user := os.Getenv("USER")
+	if u, err := osuser.Current(); err == nil {
+		user = u.Username
+	}
 	return Info{APIVersion: Version, Version: s.version, Hostname: host,
-		OS: runtime.GOOS, DefaultDB: s.defaultDB, DBs: s.dbPaths, DefaultExcludes: defaults}
+		OS: runtime.GOOS, DefaultDB: s.defaultDB, DBs: s.dbPaths, DefaultExcludes: defaults,
+		User: user, Persistent: s.Persistent}
 }
 
 // resolveDB maps a request's db field to an open handle; "" means default.

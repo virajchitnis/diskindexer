@@ -258,13 +258,21 @@ struct IndexSheet: View {
 
     private var headerFooter: String {
         let server = model.transport?.displayName ?? "the server"
+        var text: String
         if draft.mode == .addCollection {
-            return "The disk doesn't need to be plugged in. Its other collections and root-level files are left as they are. Indexing runs on \(server)."
+            text = "The disk doesn't need to be plugged in. Its other collections and root-level files are left as they are."
+        } else if !draft.autoCollections && draft.mountPath.isEmpty {
+            text = "Without a mount path, only the listed collections are indexed and the disk's other collections and root-level files are left as they are."
+        } else {
+            text = ""
         }
-        if !draft.autoCollections && draft.mountPath.isEmpty {
-            return "Without a mount path, only the listed collections are indexed and the disk's other collections and root-level files are left as they are."
-        }
-        return "Indexing runs on \(server) and keeps going if this app disconnects."
+        // Say what happens to the run if the app goes away: only claim it
+        // keeps going when the server says so.
+        let background = backgroundRunNote(info: model.info, serverName: server, isLocal: model.transport?.isLocal == true)
+            ?? (model.info?.persistent == true
+                ? "Indexing runs on \(server) and keeps going if this app disconnects."
+                : "Indexing runs on \(server).")
+        return text.isEmpty ? background : text + " " + background
     }
 
     private var mountPrompt: String {

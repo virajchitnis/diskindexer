@@ -13,16 +13,35 @@ public protocol ServerManaging: AnyObject {
 public struct InstallReport: Sendable, Equatable {
     /// The version the server now runs.
     public var version: String
-    /// Whether the service keeps running while the user is logged out. When
-    /// false, `lingerCommand` is what they need to run once.
+    /// No service was set up (no systemd): the app starts the server for
+    /// each connection, so it only runs while the app is connected.
+    public var onDemand: Bool
+    /// Whether the service keeps running (and finishes index runs) while
+    /// nobody is logged in. Optional: when false, `lingerCommand` turns it on.
     public var lingerEnabled: Bool
     public var lingerCommand: String?
 
-    public init(version: String, lingerEnabled: Bool, lingerCommand: String?) {
+    public init(version: String, onDemand: Bool = false, lingerEnabled: Bool, lingerCommand: String?) {
         self.version = version
+        self.onDemand = onDemand
         self.lingerEnabled = lingerEnabled
         self.lingerCommand = lingerCommand
     }
+}
+
+/// What happens to an index run if the app goes away, for the Index sheet.
+/// nil when the server keeps running (or it's unknown), so there's nothing
+/// to warn about.
+public func backgroundRunNote(info: ServerInfo?, serverName: String, isLocal: Bool) -> String? {
+    guard let info, info.persistent == false else { return nil }
+    if isLocal {
+        return "Indexing runs while this app is open; quitting it stops the run. Files indexed so far are kept."
+    }
+    var note = "\(serverName) only runs diskindexer while this app is connected, so the run stops if your Mac disconnects or sleeps. Files indexed so far are kept."
+    if info.os == "linux" {
+        note += " To let runs finish on their own, run `sudo loginctl enable-linger \(info.user ?? "$USER")` on \(serverName) once."
+    }
+    return note
 }
 
 /// A diskindexer version from `git describe`, e.g. "v1.3.1-20-gabc123-dirty":

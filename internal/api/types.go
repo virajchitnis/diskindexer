@@ -26,6 +26,13 @@ type Info struct {
 	DBs        []string `json:"dbs"`
 	// DefaultExcludes apply to every index run (config default_excludes).
 	DefaultExcludes []string `json:"defaultExcludes"`
+	// User is the account the server runs as.
+	User string `json:"user"`
+	// Persistent says whether the server keeps running (and finishes index
+	// runs) after the client disconnects: false when it was started for one
+	// connection (--stdin-watch) or its systemd user service stops at logout
+	// (no linger). Omitted when unknown.
+	Persistent *bool `json:"persistent,omitempty"`
 }
 
 type Disk struct {

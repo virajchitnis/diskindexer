@@ -400,6 +400,10 @@ struct AppModelIntegrationTests {
         let (model, _) = try await connectedModel()
         defer { model.disconnect() }
         #expect(model.info?.defaultExcludes == [])
+        // Started for this connection (--stdin-watch): it says it won't
+        // outlive the app, so the Index sheet warns.
+        #expect(model.info?.persistent == false)
+        #expect(model.info?.user?.isEmpty == false)
 
         let root = try makeDisk(["Pics/a.jpg": "a", "Pics/.stignore": "x", "Pics/.snapshots/s.jpg": "s"])
         var draft = IndexDraft()

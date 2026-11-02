@@ -14,6 +14,11 @@ public struct ServerInfo: Codable, Sendable {
     /// Excludes every index run applies (server config). Optional: older
     /// servers omit it.
     public var defaultExcludes: [String]?
+    /// The account the server runs as.
+    public var user: String?
+    /// Whether the server keeps running, and finishes index runs, after the
+    /// app disconnects. nil when unknown (or an older server).
+    public var persistent: Bool?
 }
 
 public struct Disk: Codable, Hashable, Sendable, Identifiable {

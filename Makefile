@@ -77,7 +77,7 @@ coverage: coverage-go coverage-apple
 
 # Cross-package coverage shells out to `go`, so make sure it's on PATH.
 coverage-go:
-	PATH="$(dir $(GO)):$$PATH" $(GO) test -coverpkg=./... -coverprofile=coverage.out ./...
+	PATH="$(dir $(GO)):$$PATH" $(GO) test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
 	PATH="$(dir $(GO)):$$PATH" scripts/check-coverage.sh go coverage.out $(COVERAGE_MIN)
 
 coverage-apple: build

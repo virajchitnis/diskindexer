@@ -332,10 +332,21 @@ The app is ad-hoc signed, not signed with an Apple Developer ID, so a copy **dow
 
 ### Set up a server
 
-**From the app (Linux servers with systemd):**
+**From the app:**
 1. Choose **Add Server…** in the connection menu and enter its address.
-2. If diskindexer isn't running there, the "Waiting for …" screen offers **Set Up diskindexer on …**. It copies the right Linux binary (amd64 or arm64, bundled in the app) to `~/.local/bin/diskindexer` over SSH, and installs and starts the systemd user service.
-3. Keeping the service running while you're logged out needs `sudo loginctl enable-linger $USER`. The app turns this on if `sudo` works without a password; otherwise it shows the command to run once.
+2. If diskindexer isn't installed there, the "Waiting for …" screen offers **Set Up diskindexer on …**. It copies the right binary over SSH to `~/.local/bin/diskindexer`: Linux amd64 or arm64, or macOS, all bundled in the app.
+   - **On Linux with systemd,** it also installs and starts a systemd user service.
+   - **On other servers** (macOS, or Linux without systemd), there's no service. The app starts `diskindexer serve` over SSH each time it connects, and it exits when the app disconnects.
+
+**Background running (optional).** Without it, the service on a Linux server runs only while you're logged in, and the app's SSH connection counts as being logged in. So diskindexer starts when the app connects and stops shortly after it disconnects. That's fine for searching and short index runs, but a long run stops if your Mac disconnects or sleeps. Files indexed so far are kept.
+
+To let runs finish on their own, enable lingering on the server once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Setup turns this on itself if `sudo` works without a password; otherwise it offers the command. When a server doesn't keep running after the app disconnects, the Index sheet says so before you start a run.
 
 **Updating:** when the server runs an older diskindexer than the app includes, a banner offers **Update…**. It asks first, warns if index runs are in progress (restarting stops them), and then replaces the binary and restarts the service. Your indexes and config aren't touched. The app never downgrades a newer server.
 

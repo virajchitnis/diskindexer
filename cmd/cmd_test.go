@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -318,8 +319,17 @@ func TestServeCommand(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer tok")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var info struct {
+		User       string `json:"user"`
+		Persistent *bool  `json:"persistent"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
+	resp.Body.Close()
+	assert.NotEmpty(t, info.User)
+	// Started for one connection, so it doesn't outlive its client.
+	require.NotNil(t, info.Persistent)
+	assert.False(t, *info.Persistent)
 
 	stdinW.Close()
 	select {
@@ -407,4 +417,13 @@ func TestIndexExcludesFromConfigAndDisk(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "Skipped anything named: .snapshots")
 	assert.NotContains(t, out, "*.tmp")
+}
+
+func TestPersistence(t *testing.T) {
+	p := persistence(true)
+	require.NotNil(t, p)
+	assert.False(t, *p, "a server tied to its client's stdin never outlives it")
+	if runtime.GOOS != "linux" {
+		assert.Nil(t, persistence(false), "unknown off Linux")
+	}
 }

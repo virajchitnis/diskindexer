@@ -230,4 +230,24 @@ struct DiskIndexerKitTests {
             #expect(f.message == "lan: no route\ntailscale: no route")
         }
     }
+
+    @Test func testBackgroundRunNote() throws {
+        func info(_ json: String) throws -> ServerInfo {
+            try APIClient.decoder.decode(ServerInfo.self, from: Data(json.utf8))
+        }
+        let base = #""apiVersion":1,"version":"v1","hostname":"h","defaultDb":"/d","dbs":[]"#
+        let linger = try info(#"{\#(base),"os":"linux","user":"viraj","persistent":true}"#)
+        let noLinger = try info(#"{\#(base),"os":"linux","user":"viraj","persistent":false}"#)
+        let macOnDemand = try info(#"{\#(base),"os":"darwin","user":"v","persistent":false}"#)
+        let old = try info(#"{\#(base),"os":"linux"}"#)
+
+        #expect(backgroundRunNote(info: linger, serverName: "enterprise", isLocal: false) == nil)
+        #expect(backgroundRunNote(info: old, serverName: "enterprise", isLocal: false) == nil, "unknown: no warning")
+        let note = try #require(backgroundRunNote(info: noLinger, serverName: "enterprise", isLocal: false))
+        #expect(note.contains("stops if your Mac disconnects"))
+        #expect(note.contains("sudo loginctl enable-linger viraj"))
+        let mac = try #require(backgroundRunNote(info: macOnDemand, serverName: "studio", isLocal: false))
+        #expect(!mac.contains("loginctl"), "no linger on macOS")
+        #expect(backgroundRunNote(info: noLinger, serverName: "x", isLocal: true)?.contains("quitting it stops the run") == true)
+    }
 }

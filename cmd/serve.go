@@ -10,8 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -93,6 +96,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		return err
 	}
 	svc.DefaultExcludes = cfg.DefaultExcludes
+	svc.Persistent = persistence(serveStdinWatch)
 	defer svc.Close()
 
 	srv := &http.Server{Handler: server.New(svc, token), ReadHeaderTimeout: 10 * time.Second}
@@ -126,6 +130,35 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Progress streams never end on their own, so fall back to a hard close.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		srv.Close()
+	}
+	return nil
+}
+
+// persistence reports whether this server outlives its client: not when it
+// exits with stdin (started for one connection); on Linux, only if the user
+// lingers, since otherwise systemd stops user services at logout. nil when
+// it can't tell.
+func persistence(stdinWatch bool) *bool {
+	no, yes := false, true
+	if stdinWatch {
+		return &no
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	u, err := user.Current()
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command("loginctl", "show-user", u.Username, "-p", "Linger", "--value").Output()
+	if err != nil {
+		return nil
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "yes":
+		return &yes
+	case "no":
+		return &no
 	}
 	return nil
 }

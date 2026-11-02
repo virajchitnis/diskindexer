@@ -330,11 +330,17 @@ struct InstallProgressView: View {
                 }
                 logView(log)
             case .done(let report):
-                Label("diskindexer \(report.version) is running", systemImage: "checkmark.circle.fill")
+                Label(report.onDemand ? "diskindexer \(report.version) is installed" : "diskindexer \(report.version) is running",
+                      systemImage: "checkmark.circle.fill")
                     .font(.headline)
                     .foregroundStyle(.green)
-                if let cmd = report.lingerCommand {
-                    Text("To keep it running while you\u{2019}re logged out of the server, run this there once (it needs your password):")
+                if report.onDemand {
+                    Text("This server has no systemd, so there\u{2019}s no background service: the app starts diskindexer whenever it connects, and it stops when the app disconnects. Index runs only continue while the app is connected.")
+                } else if report.lingerEnabled {
+                    Text("It runs in the background, so index runs keep going after your Mac disconnects.")
+                } else if let cmd = report.lingerCommand {
+                    Text("It runs while you\u{2019}re connected, and stops shortly after the app disconnects \u{2014} including any index run in progress. That\u{2019}s fine for searching and short runs.")
+                    Text("Optional: to let long index runs finish on their own after your Mac disconnects, turn on background running by running this on the server once (it asks for your password):")
                     HStack {
                         Text(cmd).font(.body.monospaced()).textSelection(.enabled)
                         Spacer()
