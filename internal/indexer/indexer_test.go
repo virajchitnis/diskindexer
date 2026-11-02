@@ -2,6 +2,7 @@ package indexer_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/viraj/diskindexer/internal/db"
 	"github.com/viraj/diskindexer/internal/indexer"
+	_ "modernc.org/sqlite"
 )
 
 func openTestDB(t *testing.T) *db.DB {
@@ -688,4 +690,48 @@ func TestRun_DiskRemembersExcludes(t *testing.T) {
 	disk, err = d.GetDiskByLabel("D")
 	require.NoError(t, err)
 	assert.Empty(t, disk.Excludes)
+}
+
+// A file whose row points at another collection (left over from older
+// versions) moves to the collection it's found in, even though it hasn't
+// changed and would otherwise be skipped.
+func TestRun_UnchangedFileFollowsItsCollection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.diskindex")
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+	mount := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "root.txt": "r"})
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+
+	disk, err := d.GetDiskByLabel("A")
+	require.NoError(t, err)
+	colls, err := d.ListCollections(disk.ID)
+	require.NoError(t, err)
+	require.Len(t, colls, 1)
+	photos := colls[0].ID
+
+	// Swap them: the collection's file loses its collection, and the root
+	// file is attached to the collection.
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = raw.Exec(`UPDATE files SET collection_id = CASE WHEN collection_id IS NULL THEN ? ELSE NULL END`, photos)
+	require.NoError(t, err)
+	raw.Close()
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	files, err := d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, files["A/Photos/a.jpg"].CollectionID)
+	assert.Equal(t, photos, *files["A/Photos/a.jpg"].CollectionID)
+	assert.Nil(t, files["A/root.txt"].CollectionID)
+
+	// Once fixed, a further run skips them again.
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Updated)
 }

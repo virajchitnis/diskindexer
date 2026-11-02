@@ -412,7 +412,10 @@ func (r *run) walkCollection(coll *db.Collection) error {
 			// For directories, skip the size comparison: their size is managed
 			// by UpdateDirSizes (a computed value), not the OS-reported size.
 			sizeMatch := info.IsDir() || existing.Size == info.Size()
-			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
+			// An unchanged file is still rewritten if it belongs to another
+			// collection row, so it follows the collection it's found in.
+			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) &&
+				sameCollection(existing.CollectionID, &coll.ID) {
 				r.stats.Skipped++
 				return nil
 			}
@@ -493,7 +496,8 @@ func (r *run) walkRoot(colls []*db.Collection) error {
 
 		if existing, ok := r.fileMap[relPath]; ok {
 			sizeMatch := info.IsDir() || existing.Size == info.Size()
-			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) {
+			if sizeMatch && existing.ModifiedAt.Equal(info.ModTime().UTC().Truncate(time.Second)) &&
+				sameCollection(existing.CollectionID, nil) {
 				r.stats.Skipped++
 				continue
 			}
@@ -509,6 +513,13 @@ func (r *run) walkRoot(colls []*db.Collection) error {
 		r.report(false)
 	}
 	return tx.Commit()
+}
+
+func sameCollection(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func fileFromEntry(diskID int64, collID *int64, relPath string, info fs.FileInfo) *db.File {

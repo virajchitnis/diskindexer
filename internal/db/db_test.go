@@ -623,3 +623,72 @@ func TestOpen_MigratesOldIndex(t *testing.T) {
 	require.NoError(t, err)
 	d2.Close()
 }
+
+// Older versions created a second collection when a disk was indexed from
+// another mount path, leaving files on the older row. Opening the index folds
+// same-name collections on a disk into the most recently indexed one.
+func TestOpen_MergesDuplicateCollections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dups.diskindex")
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	disk, err := d.UpsertDisk("Seagate", "")
+	require.NoError(t, err)
+	other, err := d.UpsertDisk("Other", "")
+	require.NoError(t, err)
+	d.Close()
+
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP INDEX collections_disk_label`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`
+		INSERT INTO collections (id, disk_id, label, root_path, last_indexed_at) VALUES
+			(1, ?, 'Stuff', '/mnt/copy-a/Stuff', '2026-05-07T21:37:12Z'),
+			(2, ?, 'Stuff', '/mnt/copy-b/Stuff', '2026-05-07T21:39:43Z'),
+			(3, ?, 'Stuff', '/mnt/real/Stuff',   '2026-07-19T22:20:27Z'),
+			(4, ?, 'Solo',  '/mnt/real/Solo',    NULL),
+			(5, ?, 'Stuff', '/mnt/other/Stuff',  NULL);
+		INSERT INTO files (disk_id, collection_id, name, path, size, modified_at, extension, is_dir) VALUES
+			(?, 1, 'a', 'Seagate/Stuff/a', 1, '2026-01-01T00:00:00Z', '', 0),
+			(?, 2, 'b', 'Seagate/Stuff/b', 1, '2026-01-01T00:00:00Z', '', 0),
+			(?, 4, 'c', 'Seagate/Solo/c',  1, '2026-01-01T00:00:00Z', '', 0);`,
+		disk.ID, disk.ID, disk.ID, disk.ID, other.ID, disk.ID, disk.ID, disk.ID)
+	require.NoError(t, err)
+	raw.Close()
+
+	d, err = db.Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+	colls, err := d.ListCollections(disk.ID)
+	require.NoError(t, err)
+	require.Len(t, colls, 2)
+	byLabel := map[string]*db.Collection{}
+	for _, c := range colls {
+		byLabel[c.Label] = c
+	}
+	assert.Equal(t, int64(3), byLabel["Stuff"].ID, "the most recently indexed row is kept")
+	assert.Equal(t, "/mnt/real/Stuff", byLabel["Stuff"].RootPath)
+	assert.Equal(t, int64(4), byLabel["Solo"].ID)
+
+	files, err := d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	require.Len(t, files, 3, "no file is lost")
+	assert.Equal(t, int64(3), *files["Seagate/Stuff/a"].CollectionID)
+	assert.Equal(t, int64(3), *files["Seagate/Stuff/b"].CollectionID)
+	assert.Equal(t, int64(4), *files["Seagate/Solo/c"].CollectionID)
+
+	// Same label on another disk is a different collection.
+	otherColls, err := d.ListCollections(other.ID)
+	require.NoError(t, err)
+	assert.Len(t, otherColls, 1)
+
+	// Labels now stay unique: renaming onto a taken name is a conflict.
+	err = d.RenameCollection(4, "Stuff")
+	require.ErrorIs(t, err, db.ErrConflict)
+	assert.Contains(t, err.Error(), `already has a collection named "Stuff"`)
+
+	// Opening again is a no-op.
+	d2, err := db.Open(path)
+	require.NoError(t, err)
+	d2.Close()
+}

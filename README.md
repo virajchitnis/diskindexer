@@ -240,7 +240,9 @@ diskindexer collections --disk "Seagate 4TB"
 
 ### `rename-collection`
 
-Rename a collection by its label. Use `--disk` to disambiguate if the same collection name exists on more than one disk.
+Rename a collection by its label. Use `--disk` to disambiguate if the same collection name exists on more than one disk. Collection names are unique within a disk, so renaming onto a name the disk already uses is refused.
+
+Older versions could list the same collection more than once when a disk was indexed from a different mount path, for example from a copy. Opening an index with this version merges those entries into the most recently indexed one; no files are lost.
 
 ```bash
 diskindexer rename-collection "Holiday Photos" --collection "Photos"

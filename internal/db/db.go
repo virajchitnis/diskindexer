@@ -69,7 +69,56 @@ func (d *DB) migrate() error {
 			return err
 		}
 	}
-	return nil
+	return d.mergeDuplicateCollections()
+}
+
+// mergeDuplicateCollections makes collection labels unique per disk. Older
+// versions created a second collection when a disk was indexed from another
+// mount path (e.g. from a copy), and files that hadn't changed stayed with the
+// old one. Same disk and label means the same files (paths are
+// Disk/Collection/...), so these rows are one collection: files move to the
+// most recently indexed row, whose root path is current, and the rest go.
+// The unique index then keeps it that way.
+func (d *DB) mergeDuplicateCollections() error {
+	var exists int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'collections_disk_label'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists > 0 {
+		return nil
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	// For each duplicated (disk, label), the row to keep: latest indexed,
+	// then newest.
+	_, err = tx.Exec(`
+		CREATE TEMP TABLE collection_merge AS
+		SELECT c.id AS old_id,
+		       (SELECT k.id FROM collections k
+		         WHERE k.disk_id = c.disk_id AND k.label = c.label
+		         ORDER BY k.last_indexed_at IS NULL, k.last_indexed_at DESC, k.id DESC
+		         LIMIT 1) AS keep_id
+		FROM collections c`)
+	if err != nil {
+		return err
+	}
+	stmts := []string{
+		`DELETE FROM collection_merge WHERE old_id = keep_id`,
+		`UPDATE files SET collection_id = (SELECT keep_id FROM collection_merge WHERE old_id = files.collection_id)
+		 WHERE collection_id IN (SELECT old_id FROM collection_merge)`,
+		`DELETE FROM collections WHERE id IN (SELECT old_id FROM collection_merge)`,
+		`DROP TABLE collection_merge`,
+		`CREATE UNIQUE INDEX collections_disk_label ON collections(disk_id, label)`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // BeginTx starts a transaction for batch operations.
@@ -365,6 +414,9 @@ func (d *DB) GetCollectionsByLabel(collLabel, diskLabel string) ([]*Collection, 
 func (d *DB) RenameCollection(id int64, newLabel string) error {
 	res, err := d.sql.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: this disk already has a collection named %q", ErrConflict, newLabel)
+		}
 		return err
 	}
 	n, _ := res.RowsAffected()

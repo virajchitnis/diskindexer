@@ -209,6 +209,9 @@ func (s *Service) RenameCollection(dbPath string, id int64, label string) error 
 		return err
 	}
 	if err := d.RenameCollection(id, label); err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
 		if strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("%w: collection %d", ErrNotFound, id)
 		}
