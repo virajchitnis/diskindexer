@@ -19,11 +19,15 @@ public struct ConnectionFailure: LocalizedError, Sendable {
     public var message: String
     public var isTransient: Bool
     public var reason: Reason?
+    /// Set when the server's host key isn't trusted, so the UI can show the
+    /// key and offer to trust it.
+    public var hostKey: HostKeyProblem?
 
-    public init(_ message: String, isTransient: Bool, reason: Reason? = nil) {
+    public init(_ message: String, isTransient: Bool, reason: Reason? = nil, hostKey: HostKeyProblem? = nil) {
         self.message = message
         self.isTransient = isTransient
         self.reason = reason
+        self.hostKey = hostKey
     }
 
     public var errorDescription: String? { message }

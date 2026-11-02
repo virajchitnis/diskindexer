@@ -38,7 +38,7 @@ final class SSHTunnel: Transport, ServerManaging {
     /// multiplexed master connection from swallowing our forward. Addresses
     /// that aren't the last get a short timeout, so an unreachable LAN
     /// address fails over quickly.
-    private func options(timeout: Int = 10) -> [String] {
+    func sshOptions(timeout: Int = 10) -> [String] {
         ["-o", "BatchMode=yes", "-o", "ConnectTimeout=\(timeout)", "-o", "ControlPath=none"]
     }
 
@@ -65,10 +65,10 @@ final class SSHTunnel: Transport, ServerManaging {
             // EOF and `serve --stdin-watch` exits, then ssh does.
             let remote = "\(Self.shellQuote(binary)) serve --stdin-watch --listen \(Self.shellQuote("unix:" + server.socket))"
             p.executableURL = URL(fileURLWithPath: Self.ssh)
-            p.arguments = options() + forward + [host, remote]
+            p.arguments = sshOptions() + forward + [host, remote]
         } else {
             // Run ssh through a wrapper so the tunnel can't outlive the app.
-            let cmd = diesWithParent(Self.ssh, options() + ["-N"] + forward + [host])
+            let cmd = diesWithParent(Self.ssh, sshOptions() + ["-N"] + forward + [host])
             p.executableURL = URL(fileURLWithPath: cmd.executable)
             p.arguments = cmd.arguments
         }
@@ -169,7 +169,7 @@ final class SSHTunnel: Transport, ServerManaging {
         }
         // Run through sh explicitly so it works whatever the login shell is.
         let command = "sh -c " + Self.shellQuote(Self.findServerScript(socketPath: path))
-        let r = try await runCommand(Self.ssh, options(timeout: timeout) + [host, command])
+        let r = try await runCommand(Self.ssh, sshOptions(timeout: timeout) + [host, command])
         let lines = r.stdout.split(separator: "\n").map(String.init)
         switch r.status {
         case 0 where lines.first == "socket" && lines.count >= 2:
@@ -182,6 +182,8 @@ final class SSHTunnel: Transport, ServerManaging {
                 diskindexer isn't installed on \(displayName).
                 Set it up from here, or install it there yourself (see the README).
                 """, isTransient: true, reason: .notRunning)
+        case 255 where SSHFailureKind.classify(r.stderr) == .hostKey:
+            throw await hostKeyFailure(host: host, stderr: r.stderr)
         case 255:
             throw sshFailure(r.stderr, host: host)
         default:
@@ -242,20 +244,20 @@ final class SSHTunnel: Transport, ServerManaging {
 
         progress("Copying diskindexer to \(displayName) (\(platform.os) \(platform.machine))\u{2026}")
         let upload = "mkdir -p ~/.local/bin && cat > ~/.local/bin/diskindexer.new && chmod +x ~/.local/bin/diskindexer.new && mv ~/.local/bin/diskindexer.new ~/.local/bin/diskindexer"
-        let up = try await runCommand(Self.ssh, options() + [host, upload], stdin: .file(binary))
+        let up = try await runCommand(Self.ssh, sshOptions() + [host, upload], stdin: .file(binary))
         guard up.status == 0 else {
             throw ProcessFailure(message: "Copying diskindexer failed: \(up.stderr)")
         }
 
         guard useService else {
-            let r = try await runCommand(Self.ssh, options() + [host, "~/.local/bin/diskindexer --version"])
+            let r = try await runCommand(Self.ssh, sshOptions() + [host, "~/.local/bin/diskindexer --version"])
             let version = r.stdout.split(separator: " ").dropFirst().first.map(String.init) ?? "unknown"
             progress("diskindexer \(version) is installed on \(displayName); the app starts it whenever it connects.")
             return InstallReport(version: version, onDemand: true, lingerEnabled: false, lingerCommand: nil)
         }
 
         progress("Setting up and starting the service\u{2026}")
-        let r = try await runCommand(Self.ssh, options() + [host, "sh -s"], stdin: .text(Self.serviceScript(unit: unit)))
+        let r = try await runCommand(Self.ssh, sshOptions() + [host, "sh -s"], stdin: .text(Self.serviceScript(unit: unit)))
         let lines = r.stdout.split(separator: "\n").map(String.init)
         guard r.status == 0 else {
             throw ProcessFailure(message: "Starting the service failed:\n\((lines + [r.stderr]).joined(separator: "\n"))")
@@ -278,7 +280,7 @@ final class SSHTunnel: Transport, ServerManaging {
     }
 
     private func preflight(on host: String, timeout: Int) async throws -> Platform {
-        let r = try await runCommand(Self.ssh, options(timeout: timeout) + [host,
+        let r = try await runCommand(Self.ssh, sshOptions(timeout: timeout) + [host,
             "uname -sm; command -v systemctl >/dev/null 2>&1 && echo systemd || echo none"])
         guard r.status == 0 else {
             throw r.status == 255 ? sshFailure(r.stderr, host: host)

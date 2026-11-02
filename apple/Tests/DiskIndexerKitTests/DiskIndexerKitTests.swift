@@ -250,4 +250,44 @@ struct DiskIndexerKitTests {
         #expect(!mac.contains("loginctl"), "no linger on macOS")
         #expect(backgroundRunNote(info: noLinger, serverName: "x", isLocal: true)?.contains("quitting it stops the run") == true)
     }
+
+    @Test func testHostKeyProblemParsing() throws {
+        // `ssh -v -o BatchMode=yes` for a key this Mac has never seen.
+        let unknownLog = """
+            debug1: Connecting to 192.168.68.69 [192.168.68.69] port 22.
+            debug1: Server host key: ssh-ed25519 SHA256:/MZvK8JUs309RSRVG70VCb0Uic+dBPslcfyFLmxvwfE
+            debug1: checking without port identifier
+            Host key verification failed.
+            """
+        let unknown = try #require(HostKeyProblem.parse(unknownLog, address: "192.168.68.69"))
+        #expect(unknown.kind == .unknown)
+        #expect(unknown.keyType == "ED25519")
+        #expect(unknown.fingerprint == "SHA256:/MZvK8JUs309RSRVG70VCb0Uic+dBPslcfyFLmxvwfE")
+        #expect(unknown.offending == nil)
+        #expect(!unknown.needsConfirmation)
+        #expect(unknown.summary.contains("hasn\u{2019}t connected to 192.168.68.69"))
+
+        // And for a key that conflicts with a trusted one.
+        let changedLog = """
+            debug1: Server host key: ecdsa-sha2-nistp256 SHA256:newkey
+            @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+            Add correct host key in /Users/me/.ssh/known_hosts to get rid of this message.
+            Offending ECDSA key in /Users/me/.ssh/known_hosts:32
+            Host key verification failed.
+            """
+        var changed = try #require(HostKeyProblem.parse(changedLog, address: "nas.local"))
+        #expect(changed.kind == .changed)
+        #expect(changed.keyType == "ECDSA")
+        #expect(changed.offending == HostKeyProblem.Entry(file: "/Users/me/.ssh/known_hosts", line: 32))
+        #expect(changed.needsConfirmation, "nothing vouches for the new key")
+        #expect(changed.summary.contains("intercepting"))
+        changed.matchingAddresses = ["nas.example.com"]
+        #expect(!changed.needsConfirmation)
+        #expect(changed.summary.contains("already trust for nas.example.com"))
+
+        #expect(HostKeyProblem.parse("ssh: connect to host x port 22: Connection refused", address: "x") == nil)
+        #expect(HostKeyProblem.keyTypeName("rsa-sha2-512") == "RSA")
+        #expect(HostKeyProblem.keyTypeName("sk-ssh-ed25519@openssh.com") == "ED25519")
+        #expect(HostKeyProblem.keyTypeName("other") == "OTHER")
+    }
 }

@@ -206,14 +206,18 @@ public struct BrowserView: View {
                 }
             }
         case .failed(let message):
-            ContentUnavailableView {
-                Label("Couldn't connect", systemImage: "bolt.horizontal.circle")
-            } description: {
-                Text(message).textSelection(.enabled)
-            } actions: {
-                HStack {
-                    installButton
-                    Button("Try Again", action: model.retryNow)
+            if let problem = model.hostKeyProblem, model.hostKeyTruster != nil {
+                HostKeyView(model: model, problem: problem)
+            } else {
+                ContentUnavailableView {
+                    Label("Couldn't connect", systemImage: "bolt.horizontal.circle")
+                } description: {
+                    Text(message).textSelection(.enabled)
+                } actions: {
+                    HStack {
+                        installButton
+                        Button("Try Again", action: model.retryNow)
+                    }
                 }
             }
         case .disconnected:

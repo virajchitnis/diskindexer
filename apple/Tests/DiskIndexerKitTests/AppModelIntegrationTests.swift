@@ -152,6 +152,39 @@ final class InstallableTransport: Transport, ServerManaging {
     }
 }
 
+/// A server whose host key isn't trusted until trustHostKey runs; with
+/// `rejectTrust`, trusting fails as if the server's key changed meanwhile.
+final class UntrustedTransport: Transport, HostKeyTrusting {
+    let displayName = "New server"
+    let isLocal = false
+    var onDisconnect: (@Sendable (String) -> Void)? {
+        get { inner.onDisconnect }
+        set { inner.onDisconnect = newValue }
+    }
+    let inner: ServeTransport
+    let problem = HostKeyProblem(address: "new.local", kind: .unknown, keyType: "ED25519", fingerprint: "SHA256:abc")
+    var rejectTrust = false
+    private(set) var trusted: [HostKeyProblem] = []
+    private(set) var attempts = 0
+
+    init(_ inner: ServeTransport) { self.inner = inner }
+
+    func connect() async throws -> Endpoint {
+        attempts += 1
+        guard !trusted.isEmpty else {
+            throw ConnectionFailure(problem.summary, isTransient: false, hostKey: problem)
+        }
+        return try await inner.connect()
+    }
+
+    func disconnect() { inner.disconnect() }
+
+    func trustHostKey(_ problem: HostKeyProblem) async throws {
+        if rejectTrust { throw APIError(status: 0, message: "new.local presented a different key") }
+        trusted.append(problem)
+    }
+}
+
 /// A free loopback port for tests that need a stable address.
 private func freePort() throws -> Int {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -613,6 +646,38 @@ struct AppModelIntegrationTests {
             if case .waiting = model.status { return true }
             return false
         })
+        model.disconnect()
+    }
+
+    @Test func untrustedHostKeyAsksThenConnects() async throws {
+        let transport = UntrustedTransport(ServeTransport(dbPath: scratchDB()))
+        let model = AppModel()
+        model.connect(transport)
+        #expect(await eventually {
+            if case .failed = model.status { return true }
+            return false
+        })
+        let problem = try #require(model.hostKeyProblem)
+        #expect(model.hostKeyTruster != nil)
+
+        // Trying again doesn't loop on a key only the user can accept.
+        model.retryNow()
+        #expect(await eventually { transport.attempts == 2 })
+        #expect(await eventually {
+            if case .failed = model.status { return true }
+            return false
+        })
+
+        transport.rejectTrust = true
+        await model.trustHostKey(problem)
+        #expect(model.status == .failed("new.local presented a different key"))
+        #expect(model.hostKeyProblem == nil, "a failed trust shows its error, not the same prompt")
+
+        transport.rejectTrust = false
+        await model.trustHostKey(problem)
+        #expect(await eventually { model.status == .connected }, "status: \(model.status)")
+        #expect(transport.trusted == [problem])
+        #expect(model.hostKeyProblem == nil)
         model.disconnect()
     }
 }

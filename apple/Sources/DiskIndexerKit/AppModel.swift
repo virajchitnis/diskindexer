@@ -66,6 +66,11 @@ public final class AppModel {
     /// The transport, if it can install diskindexer on its server.
     public var serverManager: ServerManaging? { transport as? ServerManaging }
 
+    /// The transport, if it can trust a server's host key itself.
+    public var hostKeyTruster: HostKeyTrusting? { transport as? HostKeyTrusting }
+    /// The host key the last connect stopped on, if any.
+    public var hostKeyProblem: HostKeyProblem? { lastFailure?.hostKey }
+
     // Metadata
     public private(set) var diskNodes: [DiskNode] = []
 
@@ -194,8 +199,9 @@ public final class AppModel {
                 guard !Task.isCancelled, self.transport === transport else { return }
                 let message = error.localizedDescription
                 lastFailure = error as? ConnectionFailure ?? ConnectionFailure(message, isTransient: error.isTransientConnectionError)
-                let versionMismatch = lastFailure?.reason == .incompatibleVersion
-                let retry = !versionMismatch && (retrying || alwaysRetry || error.isTransientConnectionError)
+                // A version mismatch or an untrusted host key won't fix itself.
+                let needsUser = lastFailure?.reason == .incompatibleVersion || lastFailure?.hostKey != nil
+                let retry = !needsUser && (retrying || alwaysRetry || error.isTransientConnectionError)
                 guard retry else {
                     status = .failed(message)
                     transport.disconnect()
@@ -246,6 +252,25 @@ public final class AppModel {
             serverUpdate = nil
             connect(transport)
         }
+    }
+
+    /// Trusts the host key the last connect stopped on, then connects. The
+    /// UI shows the fingerprint first (and asks again for a changed key).
+    public func trustHostKey(_ problem: HostKeyProblem) async {
+        guard let truster = hostKeyTruster, let transport else { return }
+        status = .connecting
+        do {
+            try await truster.trustHostKey(problem)
+        } catch {
+            guard self.transport === transport else { return }
+            let message = error.localizedDescription
+            lastFailure = ConnectionFailure(message, isTransient: false)
+            status = .failed(message)
+            return
+        }
+        guard self.transport === transport else { return }
+        lastFailure = nil
+        connect(transport)
     }
 
     public func dismissInstall() {

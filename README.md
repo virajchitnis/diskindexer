@@ -372,8 +372,12 @@ Setup turns this on itself if `sudo` works without a password; otherwise it offe
 
 How the connection works:
 - The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server.
-- It can't answer password or host-key prompts, so `ssh <host>` must already work from Terminal without prompting.
-- If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop with advice instead of retrying.
+- It can't answer password prompts, so `ssh <host>` must log in from Terminal without asking for one.
+- **Host keys:** the first time you connect to an address, the app shows the server's key fingerprint and asks whether to trust it. If an address's key has changed, the app shows the old and new fingerprints:
+  - When the new key is one you already trust for another address of the same server (for example its LAN IP and its hostname), it says so and offers **Replace Key and Connect**.
+  - Otherwise it warns that the connection may be intercepted and asks again before replacing the key.
+  - The app removes only the conflicting line from `~/.ssh/known_hosts` and keeps the previous file as `known_hosts.old`. ssh itself then adds the new key.
+- If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop and ask instead of retrying.
 - If the connection drops, for example when the Mac sleeps, the app notices within about 15 seconds and reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
 - Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
 
