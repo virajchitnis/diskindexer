@@ -410,6 +410,10 @@ public final class AppModel {
     private func update(_ job: Job) {
         let wasRunning = jobs.first { $0.id == job.id }?.state == .running
         if let i = jobs.firstIndex(where: { $0.id == job.id }) {
+            // A job never goes back to running once it has finished: a
+            // progress event already in flight can arrive after the cancel
+            // response (or the final event) and would otherwise revive it.
+            if jobs[i].state != .running && job.state == .running { return }
             jobs[i] = job
         } else {
             jobs.insert(job, at: 0)
