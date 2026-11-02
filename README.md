@@ -11,7 +11,7 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Directory sizes** — computed automatically at the end of every index run; no re-scan needed
 - **Collections** — top-level directories are auto-detected as collections; manual override supported
 - **Interactive TUI** — live search with disk, collection, and type filters, sorting, browser panel, detail panel, and one-key clipboard copy
-- **Exclude directories** — skip directories by name or glob at any depth during indexing (`--exclude`)
+- **Excludes** — skip files and folders by name or glob at any depth. Set defaults once in the config; each disk also remembers its own excludes
 - **Duplicate highlighting** — files and directories sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
@@ -101,6 +101,18 @@ known_dbs = [
 
 `known_dbs` lists all indexes that `diskindexer search` queries by default. Add a path here to include it in every search automatically.
 
+`default_excludes` lists files and folders that every index run skips, on any disk, from the CLI or the app:
+
+```toml
+default_excludes = [".snapshots", ".addition", ".incomplete", ".stfolder", ".stignore", "lost+found", ".AppleDouble"]
+```
+
+On a server running `diskindexer serve`, restart the service after editing it:
+
+```bash
+systemctl --user restart diskindexer
+```
+
 ## Commands
 
 ### `index`
@@ -117,13 +129,20 @@ diskindexer index --disk "Label" --collection "Label:/path" [flags]   # no mount
 | `--disk` | Disk label (required) |
 | `--description` | Optional description |
 | `--collection "Label:/path"` | Manually specify a collection (repeatable; disables auto-detection) |
-| `--exclude name` | Directory name or glob to skip at any depth (repeatable) |
+| `--exclude name` | File or folder name, or a glob, to skip at any depth (repeatable). Saved with the disk |
+| `--no-default-excludes` | Don't apply the config's `default_excludes` for this run |
 | `--force` | Wipe and re-index from scratch |
 | `--db` | Path to `.diskindex` file |
 
 Collections are auto-detected as top-level directories. Each `--collection` needs its own name and its own folder; a run that lists either twice is refused, since the collections would overwrite each other in the index. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
 
-Use `--exclude` to skip directories by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). Excluded directories and all their contents are omitted from the index.
+Use `--exclude` to skip files and folders by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). An excluded folder is skipped with everything in it. A file or folder that was indexed before and is now excluded is removed from the index.
+
+Excludes come from two places:
+- **`default_excludes` in the config file** apply to every run.
+- **Each disk's own excludes** are remembered from its last run. A run without `--exclude` reuses them; a run with `--exclude` replaces them. In the app, the Index sheet shows the server's defaults and pre-fills the disk's own list.
+
+The run's output lists everything it skipped.
 
 ```bash
 # Auto-detect collections (top-level dirs become collections)

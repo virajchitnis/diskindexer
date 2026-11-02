@@ -54,6 +54,7 @@ func run(t *testing.T, args ...string) (string, error) {
 	}()
 
 	rootCmd.SetArgs(args)
+	rootCmd.SetOut(io.Discard) // usage text on errors
 	rootCmd.SetErr(io.Discard)
 	runErr := rootCmd.Execute()
 
@@ -379,4 +380,31 @@ func TestPathHelpers(t *testing.T) {
 	assert.Equal(t, "/home/someone/x/y", expandHome("~/x/y"))
 	assert.Equal(t, "/abs", expandHome("/abs"))
 	assert.True(t, strings.HasPrefix(defaultSocketPath(), "/home/someone/.config/diskindexer/"))
+}
+
+func TestIndexExcludesFromConfigAndDisk(t *testing.T) {
+	disk := setupHome(t)
+	cfgDir := filepath.Join(os.Getenv("HOME"), ".config", "diskindexer")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		[]byte(`default_excludes = ["*.tmp"]`+"\n"), 0o644))
+
+	// Defaults plus this run's excludes; the run's are saved with the disk.
+	out, err := run(t, "index", disk, "--disk", "D", "--exclude", ".snapshots")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Skipped anything named: *.tmp, .snapshots")
+
+	// No --exclude: the disk's saved excludes are reused.
+	out, err = run(t, "reindex", disk, "--disk", "D")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Skipped anything named: *.tmp, .snapshots")
+	out, err = run(t, "search", "--no-tui", "old")
+	require.NoError(t, err)
+	assert.Contains(t, out, "No results", ".snapshots stays excluded")
+
+	// --no-default-excludes drops the config defaults for this run.
+	out, err = run(t, "reindex", disk, "--disk", "D", "--no-default-excludes")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Skipped anything named: .snapshots")
+	assert.NotContains(t, out, "*.tmp")
 }

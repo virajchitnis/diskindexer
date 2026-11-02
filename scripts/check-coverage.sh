@@ -15,7 +15,10 @@ swift)
 	cd "$src"
 	bin_dir=$(swift build --show-bin-path)
 	prof="$(dirname "$(swift test --show-codecov-path)")/default.profdata"
-	bin="$bin_dir/DiskIndexerPackageTests.xctest/Contents/MacOS/DiskIndexerPackageTests"
+	# SwiftPM names the bundle DiskIndexerPackageTests.xctest; Xcode's newer
+	# build system names it after the test target. Take whichever exists.
+	bundle=$(find "$bin_dir" -maxdepth 1 -name '*.xctest' | head -1)
+	bin="$bundle/Contents/MacOS/$(basename "$bundle" .xctest)"
 	report=$(xcrun llvm-cov report "$bin" -instr-profile="$prof" \
 		-ignore-filename-regex='(/Tests/|/\.build/|/Views/|/DiskIndexerMac/)' \
 		-show-region-summary=false -show-branch-summary=false -show-functions=false)

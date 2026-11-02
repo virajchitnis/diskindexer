@@ -30,6 +30,10 @@ type Service struct {
 	dbPaths   []string
 	dbs       map[string]*db.DB
 	jobs      *jobManager
+
+	// DefaultExcludes apply to every index run unless a request opts out
+	// (config default_excludes).
+	DefaultExcludes []string
 }
 
 // NewService opens defaultDB plus every path in dbPaths. defaultDB is where
@@ -69,8 +73,12 @@ func (s *Service) Close() {
 
 func (s *Service) Info() Info {
 	host, _ := os.Hostname()
+	defaults := s.DefaultExcludes
+	if defaults == nil {
+		defaults = []string{}
+	}
 	return Info{APIVersion: Version, Version: s.version, Hostname: host,
-		OS: runtime.GOOS, DefaultDB: s.defaultDB, DBs: s.dbPaths}
+		OS: runtime.GOOS, DefaultDB: s.defaultDB, DBs: s.dbPaths, DefaultExcludes: defaults}
 }
 
 // resolveDB maps a request's db field to an open handle; "" means default.

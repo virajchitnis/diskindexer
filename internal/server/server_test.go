@@ -358,3 +358,36 @@ func TestJobReportsUnreadablePaths(t *testing.T) {
 	assert.Equal(t, 1, j.Progress.Errors)
 	assert.Zero(t, j.Stats.Deleted)
 }
+
+func TestExcludesDefaultsAndPerDisk(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "x.diskindex")
+	svc, err := api.NewService("test", dbPath, nil)
+	require.NoError(t, err)
+	svc.DefaultExcludes = []string{".snapshots"}
+	srv := httptest.NewServer(server.New(svc, ""))
+	t.Cleanup(func() { srv.Close(); svc.Close() })
+	h := &harness{t: t, srv: srv}
+
+	var info api.Info
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/info", nil, &info))
+	assert.Equal(t, []string{".snapshots"}, info.DefaultExcludes)
+
+	root := makeDisk(t, map[string]string{"P/a.jpg": "a", "P/.snapshots/s": "s", "P/x.tmp": "t"})
+	var j api.Job
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs",
+		api.IndexRequest{Disk: "D", MountPath: root, Excludes: []string{"*.tmp"}}, &j))
+	j = h.waitJob(j.ID)
+	require.Equal(t, api.JobDone, j.State, j.Error)
+	assert.Equal(t, []string{".snapshots", "*.tmp"}, j.Stats.Excludes)
+
+	var disks []api.Disk
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/disks", nil, &disks))
+	require.Len(t, disks, 1)
+	assert.Equal(t, []string{"*.tmp"}, disks[0].Excludes, "only the disk's own excludes are saved")
+
+	// Omitting excludes reuses the saved ones; opting out drops the defaults.
+	require.Equal(t, http.StatusAccepted, h.do("POST", "/v1/jobs",
+		api.IndexRequest{Disk: "D", MountPath: root, NoDefaultExcludes: true}, &j))
+	j = h.waitJob(j.ID)
+	assert.Equal(t, []string{"*.tmp"}, j.Stats.Excludes)
+}

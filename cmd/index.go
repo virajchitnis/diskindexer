@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/term"
@@ -16,6 +17,7 @@ var (
 	indexCollections []string
 	indexExcludes    []string
 	indexForce       bool
+	indexNoDefaults  bool
 )
 
 var indexCmd = &cobra.Command{
@@ -50,7 +52,9 @@ func init() {
 		cmd.Flags().StringArrayVar(&indexCollections, "collection", nil,
 			"manual collection spec: \"Label:/absolute/path\" (repeatable; disables auto-detect)")
 		cmd.Flags().StringArrayVar(&indexExcludes, "exclude", nil,
-			"directory name or glob pattern to skip at any depth (repeatable; e.g. --exclude .snapshots)")
+			"file or folder name or glob pattern to skip at any depth (repeatable; e.g. --exclude .snapshots). Saved with the disk; omit to reuse the saved ones")
+		cmd.Flags().BoolVar(&indexNoDefaults, "no-default-excludes", false,
+			"don't apply default_excludes from the config file for this run")
 		cmd.Flags().BoolVar(&indexForce, "force", false, "wipe existing index for this disk and re-index from scratch")
 		_ = cmd.MarkFlagRequired("disk")
 	}
@@ -58,6 +62,11 @@ func init() {
 }
 
 func runIndex(cmd *cobra.Command, args []string) error {
+	// No --exclude flags: reuse the excludes saved with the disk (nil).
+	var excludes []string
+	if cmd.Flags().Changed("exclude") {
+		excludes = append([]string{}, indexExcludes...)
+	}
 	var mountPath string
 	if len(args) == 1 {
 		mountPath = args[0]
@@ -91,8 +100,11 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		Description: indexDescription,
 		MountPath:   mountPath,
 		Collections: collSpecs,
-		Excludes:    indexExcludes,
+		Excludes:    excludes,
 		Force:       indexForce,
+	}
+	if !indexNoDefaults {
+		opts.DefaultExcludes = cfg.DefaultExcludes
 	}
 
 	fmt.Printf("Indexing %q → %s\n", indexDiskLabel, dbPath)
@@ -132,6 +144,9 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Done in %s\n", stats.Elapsed.Round(1e6))
 	fmt.Printf("  Added: %d  Updated: %d  Deleted: %d  Unchanged: %d\n",
 		stats.Added, stats.Updated, stats.Deleted, stats.Skipped)
+	if len(stats.Excludes) > 0 {
+		fmt.Printf("  Skipped anything named: %s\n", strings.Join(stats.Excludes, ", "))
+	}
 	fmt.Print(formatPathErrors(stats, func(s string) string { return s }))
 	return nil
 }

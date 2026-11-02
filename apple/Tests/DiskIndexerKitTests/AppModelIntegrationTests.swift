@@ -364,6 +364,31 @@ struct AppModelIntegrationTests {
         #expect(model.diskNodes[0].collections.contains { $0.label == "Music" })
     }
 
+    @Test func diskRemembersExcludesAcrossRuns() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+        #expect(model.info?.defaultExcludes == [])
+
+        let root = try makeDisk(["Pics/a.jpg": "a", "Pics/.stignore": "x", "Pics/.snapshots/s.jpg": "s"])
+        var draft = IndexDraft()
+        draft.disk = "Pics Disk"
+        draft.mountPath = root
+        draft.excludes = ".stignore, .snapshots"
+        try await model.startIndex(draft.request)
+        #expect(await eventually { model.jobs.first?.state == .done })
+        #expect(model.jobs.first?.stats?.excludes == [".stignore", ".snapshots"])
+
+        // The disk now carries them, and a reindex sheet pre-fills them.
+        #expect(await eventually { model.diskNodes.contains { $0.label == "Pics Disk" } })
+        let node = try #require(model.diskNodes.first { $0.label == "Pics Disk" })
+        #expect(node.disks.first?.excludes == [".stignore", ".snapshots"])
+        #expect(IndexDraft(node: node).excludes == ".stignore, .snapshots")
+
+        model.query = "stignore"
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(model.results.isEmpty, "the excluded file isn't indexed")
+    }
+
     @Test func reconnectsAfterServerDies() async throws {
         let (model, transport) = try await connectedModel()
         defer { model.disconnect() }

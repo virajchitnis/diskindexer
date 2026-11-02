@@ -133,6 +133,9 @@ func (m progressModel) View() string {
 			pLabel.Render("Deleted: ") + pNum.Render(fmt.Sprintf("%d", m.stats.Deleted)) + "  " +
 			pLabel.Render("Unchanged: ") + pNum.Render(fmt.Sprintf("%d", m.stats.Skipped)))
 		b.WriteByte('\n')
+		if len(m.stats.Excludes) > 0 {
+			b.WriteString("   " + pLabel.Render("Skipped anything named: ") + strings.Join(m.stats.Excludes, ", ") + "\n")
+		}
 		b.WriteString(formatPathErrors(m.stats, func(s string) string { return pFail.Render(s) }))
 		return b.String()
 	}

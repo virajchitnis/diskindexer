@@ -24,6 +24,8 @@ type Info struct {
 	OS         string   `json:"os"`
 	DefaultDB  string   `json:"defaultDb"`
 	DBs        []string `json:"dbs"`
+	// DefaultExcludes apply to every index run (config default_excludes).
+	DefaultExcludes []string `json:"defaultExcludes"`
 }
 
 type Disk struct {
@@ -33,6 +35,8 @@ type Disk struct {
 	Description   string     `json:"description"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	LastIndexedAt *time.Time `json:"lastIndexedAt,omitempty"`
+	// Excludes the disk was last indexed with, beyond the defaults.
+	Excludes []string `json:"excludes"`
 }
 
 type Collection struct {
@@ -89,8 +93,12 @@ type IndexRequest struct {
 	Description string           `json:"description,omitempty"`
 	MountPath   string           `json:"mountPath"` // "" allowed when Collections is set
 	Collections []CollectionSpec `json:"collections,omitempty"`
-	Excludes    []string         `json:"excludes,omitempty"`
-	Force       bool             `json:"force,omitempty"`
+	// Excludes replace the disk's saved excludes; omit to reuse them, or
+	// send [] for none.
+	Excludes []string `json:"excludes,omitempty"`
+	// NoDefaultExcludes skips the server's default excludes for this run.
+	NoDefaultExcludes bool `json:"noDefaultExcludes,omitempty"`
+	Force             bool `json:"force,omitempty"`
 }
 
 type Progress struct {
@@ -122,6 +130,8 @@ type Stats struct {
 	// ErrorCount paths couldn't be read; Errors lists the first of them.
 	ErrorCount int         `json:"errorCount"`
 	Errors     []PathError `json:"errors,omitempty"`
+	// Excludes this run skipped: the defaults plus the disk's own.
+	Excludes []string `json:"excludes,omitempty"`
 }
 
 type JobState string
@@ -160,8 +170,12 @@ type Error struct {
 }
 
 func diskFromDB(dbPath string, d *db.Disk) Disk {
+	excludes := d.Excludes
+	if excludes == nil {
+		excludes = []string{}
+	}
 	return Disk{DB: dbPath, ID: d.ID, Label: d.Label, Description: d.Description,
-		CreatedAt: d.CreatedAt, LastIndexedAt: d.LastIndexedAt}
+		CreatedAt: d.CreatedAt, LastIndexedAt: d.LastIndexedAt, Excludes: excludes}
 }
 
 func collectionFromDB(dbPath string, c *db.Collection) Collection {
@@ -183,7 +197,7 @@ func progressFromIndexer(u indexer.ProgressUpdate) Progress {
 
 func statsFromIndexer(st *indexer.Stats) *Stats {
 	out := &Stats{Added: st.Added, Updated: st.Updated, Deleted: st.Deleted, Skipped: st.Skipped,
-		ElapsedMs: float64(st.Elapsed.Milliseconds()), ErrorCount: st.ErrorCount}
+		ElapsedMs: float64(st.Elapsed.Milliseconds()), ErrorCount: st.ErrorCount, Excludes: st.Excludes}
 	for _, e := range st.Errors {
 		out.Errors = append(out.Errors, PathError{Path: e.Path, Error: e.Err})
 	}

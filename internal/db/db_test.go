@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -585,4 +586,40 @@ func TestUpsertCollection_MatchesByLabel(t *testing.T) {
 	other, err := d.UpsertCollection(disk.ID, "Music", "/media/disk/Music")
 	require.NoError(t, err)
 	assert.NotEqual(t, orig.ID, other.ID)
+}
+
+// Indexes created before the excludes column existed get it on open.
+func TestOpen_MigratesOldIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.diskindex")
+	old, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = old.Exec(`
+		CREATE TABLE disks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			label TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			last_indexed_at TEXT
+		);
+		INSERT INTO disks (label, created_at) VALUES ('Old Disk', '2026-05-01T00:00:00Z');`)
+	require.NoError(t, err)
+	old.Close()
+
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+	disk, err := d.GetDiskByLabel("Old Disk")
+	require.NoError(t, err)
+	require.NotNil(t, disk)
+	assert.Empty(t, disk.Excludes)
+
+	require.NoError(t, d.SetDiskExcludes(disk.ID, []string{".snapshots", "lost+found"}))
+	disk, err = d.GetDiskByLabel("Old Disk")
+	require.NoError(t, err)
+	assert.Equal(t, []string{".snapshots", "lost+found"}, disk.Excludes)
+
+	// Opening again doesn't try to add the column twice.
+	d2, err := db.Open(path)
+	require.NoError(t, err)
+	d2.Close()
 }

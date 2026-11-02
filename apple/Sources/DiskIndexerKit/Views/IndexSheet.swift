@@ -17,7 +17,11 @@ struct IndexDraft: Identifiable {
     var mountPath = ""
     var autoCollections = true
     var collections: [EditableCollection] = []
+    /// The disk's own excludes, comma-separated. Pre-filled from what the
+    /// disk was last indexed with; saved with the disk when the run starts.
     var excludes = ""
+    /// Apply the server's default excludes (shown read-only in the sheet).
+    var useDefaultExcludes = true
     var force = false
 
     var isReindex: Bool { mode == .reindex }
@@ -29,6 +33,7 @@ struct IndexDraft: Identifiable {
     init(node: DiskNode) {
         disk = node.label
         description = node.disks.first?.description ?? ""
+        excludes = Self.remembered(node)
         mode = .reindex
         mountPath = node.guessedMountPath ?? ""
         if node.guessedMountPath == nil && !node.collections.isEmpty {
@@ -39,9 +44,18 @@ struct IndexDraft: Identifiable {
 
     init(addingTo node: DiskNode) {
         disk = node.label
+        excludes = Self.remembered(node)
         mode = .addCollection
         autoCollections = false
         collections = [EditableCollection(label: "", path: "")]
+    }
+
+    private static func remembered(_ node: DiskNode) -> String {
+        (node.disks.first?.excludes ?? []).joined(separator: ", ")
+    }
+
+    var excludeList: [String] {
+        excludes.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     var title: String {
@@ -53,7 +67,6 @@ struct IndexDraft: Identifiable {
     }
 
     var request: IndexRequest {
-        let ex = excludes.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         let colls = autoCollections ? [] : collections
             .filter { !$0.label.isEmpty && !$0.path.isEmpty }
             .map { CollectionSpec(label: $0.label, rootPath: $0.path) }
@@ -64,7 +77,10 @@ struct IndexDraft: Identifiable {
             mountPath: mode == .addCollection ? "" : mountPath,
             description: description.isEmpty ? nil : description,
             collections: colls.isEmpty ? nil : colls,
-            excludes: ex.isEmpty ? nil : ex,
+            // Always sent, so clearing the field clears the disk's saved
+            // excludes (nil would reuse them).
+            excludes: excludeList,
+            noDefaultExcludes: useDefaultExcludes ? nil : true,
             force: force ? true : nil
         )
     }
@@ -166,16 +182,11 @@ struct IndexSheet: View {
                     }
                 }
 
-                if draft.mode != .addCollection {
-                    Section("Options") {
-                        TextField("Exclude folders", text: $draft.excludes, prompt: Text(".snapshots, *.cache"))
-                        Toggle("Rebuild from scratch (wipe this disk's index first)", isOn: $draft.force)
-                    }
-                }
+                excludesSection
 
-                if draft.mode == .addCollection {
+                if draft.mode != .addCollection {
                     Section {
-                        TextField("Exclude folders", text: $draft.excludes, prompt: Text(".snapshots, *.cache"))
+                        Toggle("Rebuild from scratch (wipe this disk's index first)", isOn: $draft.force)
                     }
                 }
 
@@ -205,6 +216,33 @@ struct IndexSheet: View {
                 if let picked { set(picked, for: target) }
                 browsing = nil
             }
+        }
+    }
+
+    /// Server defaults (read-only, can be turned off for this run) plus the
+    /// disk's own excludes, which are remembered for next time.
+    @ViewBuilder
+    private var excludesSection: some View {
+        let defaults = model.info?.defaultExcludes ?? []
+        Section {
+            if !defaults.isEmpty {
+                Toggle(isOn: $draft.useDefaultExcludes) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Skip the server\u{2019}s default excludes")
+                        Text(defaults.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            TextField(defaults.isEmpty ? "Skip" : "Also skip", text: $draft.excludes, prompt: Text(".snapshots, *.tmp"))
+                .accessibilityIdentifier("index.excludes")
+        } header: {
+            Text("Excludes")
+        } footer: {
+            Text("Names or patterns of files and folders to skip at any depth, separated by commas. This disk remembers them for next time\(defaults.isEmpty ? "; set default_excludes in the server\u{2019}s config.toml to skip some on every disk" : "").")
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -124,6 +124,18 @@ final class DiskIndexerUITests: XCTestCase {
         clickHittable(window.buttons, name)
     }
 
+    /// Drags `source` onto `target` until `expected` (the confirmation or
+    /// the clash alert) appears. A drag on a busy CI runner occasionally
+    /// doesn't register as a drop, so retry a couple of times.
+    @discardableResult
+    private func drag(_ source: XCUIElement, onto target: XCUIElement, expecting expected: XCUIElement) -> Bool {
+        for _ in 0..<3 {
+            source.click(forDuration: 1.0, thenDragTo: target)
+            if expected.waitForExistence(timeout: 5) { return true }
+        }
+        return false
+    }
+
     private func clickHittable(_ query: XCUIElementQuery, _ name: String) {
         let matches = query.matching(identifier: name)
         XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), name)
@@ -248,8 +260,7 @@ final class DiskIndexerUITests: XCTestCase {
         XCTAssertTrue(photos.waitForExistence(timeout: 20))
         let diskB = sidebarItem("Disk B")
 
-        photos.click(forDuration: 0.5, thenDragTo: diskB)
-        XCTAssertTrue(window.buttons["Move"].waitForExistence(timeout: 5), "confirmation before moving")
+        XCTAssertTrue(drag(photos, onto: diskB, expecting: window.buttons["Move"]), "confirmation before moving")
         clickButton("Move")
 
         // Filter to the moved collection (no typing, which would put "Undo
@@ -272,9 +283,8 @@ final class DiskIndexerUITests: XCTestCase {
         let music = collection("Music", under: "Disk A")
         XCTAssertTrue(music.waitForExistence(timeout: 20))
 
-        music.click(forDuration: 0.5, thenDragTo: sidebarItem("Disk B"))
         // Disk B already has a Music collection: explained, not merged.
-        XCTAssertTrue(window.buttons["OK"].waitForExistence(timeout: 5))
+        XCTAssertTrue(drag(music, onto: sidebarItem("Disk B"), expecting: window.buttons["OK"]))
         XCTAssertFalse(window.buttons["Move"].exists)
         clickButton("OK")
     }

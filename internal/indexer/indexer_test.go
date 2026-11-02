@@ -603,3 +603,89 @@ func TestRun_ProgressDuringUnchangedFiles(t *testing.T) {
 	assert.Greater(t, len(skippedSeen), 40, "a report per unchanged file when unthrottled")
 	assert.Equal(t, stats.Skipped, skippedSeen[len(skippedSeen)-1])
 }
+
+// Excludes match files as well as folders (e.g. Syncthing's .stignore file).
+func TestRun_ExcludesMatchFiles(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg":       "a",
+		"Photos/.stignore":   "ignore me",
+		"Photos/sub/x.tmp":   "tmp",
+		"Photos/.stfolder/f": "marker",
+		"root.tmp":           "root-level file",
+		"root.txt":           "kept",
+	})
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root,
+		Excludes: []string{".stignore", "*.tmp", ".stfolder"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{".stignore", "*.tmp", ".stfolder"}, stats.Excludes)
+
+	files, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/a.jpg")
+	assert.Contains(t, files, "D/root.txt")
+	for _, p := range []string{"D/Photos/.stignore", "D/Photos/sub/x.tmp", "D/Photos/.stfolder", "D/Photos/.stfolder/f", "D/root.tmp"} {
+		assert.NotContains(t, files, p)
+	}
+}
+
+// A newly excluded file that was indexed before is removed from the index.
+func TestRun_NewlyExcludedFileIsRemoved(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Photos/.stignore": "x"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{".stignore"}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Deleted)
+}
+
+// Each disk remembers its excludes; a run without any reuses them, a run
+// with some replaces them, and defaults always apply without being saved.
+func TestRun_DiskRemembersExcludes(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg":           "a",
+		"Photos/.snapshots/s.jpg": "s",
+		"Photos/cache/c.jpg":     "c",
+		"Photos/lost+found/l":    "l",
+	})
+	defaults := []string{"lost+found"}
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root,
+		Excludes: []string{".snapshots"}, DefaultExcludes: defaults})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"lost+found", ".snapshots"}, stats.Excludes)
+
+	disk, err := d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Equal(t, []string{".snapshots"}, disk.Excludes, "defaults aren't saved with the disk")
+
+	// nil Excludes: reuse the saved ones.
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, DefaultExcludes: defaults})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"lost+found", ".snapshots"}, stats.Excludes)
+	files, err := d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	assert.NotContains(t, files, "D/Photos/.snapshots")
+	assert.NotContains(t, files, "D/Photos/lost+found")
+
+	// Given excludes replace the saved ones.
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{"cache"}})
+	require.NoError(t, err)
+	disk, err = d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cache"}, disk.Excludes)
+	files, err = d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/.snapshots/s.jpg", "no longer excluded")
+	assert.NotContains(t, files, "D/Photos/cache/c.jpg")
+
+	// An empty, non-nil list clears them.
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{}})
+	require.NoError(t, err)
+	disk, err = d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Empty(t, disk.Excludes)
+}

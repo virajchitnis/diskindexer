@@ -92,6 +92,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		closeAll()
 		return err
 	}
+	svc.DefaultExcludes = cfg.DefaultExcludes
 	defer svc.Close()
 
 	srv := &http.Server{Handler: server.New(svc, token), ReadHeaderTimeout: 10 * time.Second}

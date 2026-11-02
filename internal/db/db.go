@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -54,8 +55,21 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
-	_, err := d.sql.Exec(schema)
-	return err
+	if _, err := d.sql.Exec(schema); err != nil {
+		return err
+	}
+	// Columns added after the first release; CREATE TABLE IF NOT EXISTS
+	// doesn't add them to existing indexes.
+	var n int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('disks') WHERE name = 'excludes'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := d.sql.Exec(`ALTER TABLE disks ADD COLUMN excludes TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BeginTx starts a transaction for batch operations.
@@ -80,7 +94,7 @@ func (d *DB) UpsertDisk(label, description string) (*Disk, error) {
 
 func (d *DB) GetDiskByLabel(label string) (*Disk, error) {
 	row := d.sql.QueryRow(
-		`SELECT id, label, description, created_at, last_indexed_at FROM disks WHERE label = ?`,
+		`SELECT id, label, description, created_at, last_indexed_at, excludes FROM disks WHERE label = ?`,
 		label,
 	)
 	return scanDisk(row)
@@ -88,7 +102,7 @@ func (d *DB) GetDiskByLabel(label string) (*Disk, error) {
 
 func (d *DB) ListDisks() ([]*Disk, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, label, description, created_at, last_indexed_at FROM disks ORDER BY label`,
+		`SELECT id, label, description, created_at, last_indexed_at, excludes FROM disks ORDER BY label`,
 	)
 	if err != nil {
 		return nil, err
@@ -103,6 +117,21 @@ func (d *DB) ListDisks() ([]*Disk, error) {
 		disks = append(disks, disk)
 	}
 	return disks, rows.Err()
+}
+
+// SetDiskExcludes saves the exclude patterns a disk was indexed with, so the
+// next run (reindex, add collection) can reuse them.
+func (d *DB) SetDiskExcludes(diskID int64, excludes []string) error {
+	v := ""
+	if len(excludes) > 0 {
+		b, err := json.Marshal(excludes)
+		if err != nil {
+			return err
+		}
+		v = string(b)
+	}
+	_, err := d.sql.Exec(`UPDATE disks SET excludes = ? WHERE id = ?`, v, diskID)
+	return err
 }
 
 func (d *DB) UpdateDiskIndexedAt(diskID int64, t time.Time) error {
@@ -838,7 +867,8 @@ type scanner interface {
 func scanDisk(s scanner) (*Disk, error) {
 	d := &Disk{}
 	var createdAt, lastIndexedAt sql.NullString
-	if err := s.Scan(&d.ID, &d.Label, &d.Description, &createdAt, &lastIndexedAt); err != nil {
+	var excludes string
+	if err := s.Scan(&d.ID, &d.Label, &d.Description, &createdAt, &lastIndexedAt, &excludes); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -850,6 +880,9 @@ func scanDisk(s scanner) (*Disk, error) {
 	if lastIndexedAt.Valid {
 		t, _ := time.Parse(time.RFC3339, lastIndexedAt.String)
 		d.LastIndexedAt = &t
+	}
+	if excludes != "" {
+		_ = json.Unmarshal([]byte(excludes), &d.Excludes)
 	}
 	return d, nil
 }

@@ -8,6 +8,9 @@ type Disk struct {
 	Description   string
 	CreatedAt     time.Time
 	LastIndexedAt *time.Time
+	// Excludes are the patterns the disk was last indexed with (beyond the
+	// configured defaults), reused when a run doesn't specify any.
+	Excludes []string
 }
 
 type Collection struct {

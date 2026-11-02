@@ -121,8 +121,11 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 		DiskLabel:   req.Disk,
 		Description: req.Description,
 		MountPath:   req.MountPath,
-		Excludes:    req.Excludes,
+		Excludes:    req.Excludes, // nil reuses the disk's saved excludes
 		Force:       req.Force,
+	}
+	if !req.NoDefaultExcludes {
+		opts.DefaultExcludes = s.DefaultExcludes
 	}
 	for _, c := range req.Collections {
 		if c.Label == "" || c.RootPath == "" {

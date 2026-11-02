@@ -11,6 +11,9 @@ public struct ServerInfo: Codable, Sendable {
     public var os: String
     public var defaultDb: String
     public var dbs: [String]
+    /// Excludes every index run applies (server config). Optional: older
+    /// servers omit it.
+    public var defaultExcludes: [String]?
 }
 
 public struct Disk: Codable, Hashable, Sendable, Identifiable {
@@ -20,6 +23,8 @@ public struct Disk: Codable, Hashable, Sendable, Identifiable {
     public var description: String
     public var createdAt: Date
     public var lastIndexedAt: Date?
+    /// Excludes the disk was last indexed with, beyond the server defaults.
+    public var excludes: [String]?
 }
 
 public struct Collection: Codable, Hashable, Sendable, Identifiable {
@@ -104,16 +109,20 @@ public struct IndexRequest: Codable, Hashable, Sendable {
     public var description: String?
     public var mountPath: String
     public var collections: [CollectionSpec]?
+    /// Replaces the disk's saved excludes; nil reuses them, [] clears them.
     public var excludes: [String]?
+    public var noDefaultExcludes: Bool?
     public var force: Bool?
 
     public init(disk: String, mountPath: String, description: String? = nil,
-                collections: [CollectionSpec]? = nil, excludes: [String]? = nil, force: Bool? = nil) {
+                collections: [CollectionSpec]? = nil, excludes: [String]? = nil,
+                noDefaultExcludes: Bool? = nil, force: Bool? = nil) {
         self.disk = disk
         self.mountPath = mountPath
         self.description = description
         self.collections = collections
         self.excludes = excludes
+        self.noDefaultExcludes = noDefaultExcludes
         self.force = force
     }
 }
@@ -148,6 +157,8 @@ public struct JobStats: Codable, Hashable, Sendable {
     public var elapsedMs: Double
     public var errorCount: Int?
     public var errors: [PathError]?
+    /// What this run skipped: the server defaults plus the disk's own.
+    public var excludes: [String]?
 }
 
 public enum JobState: String, Codable, Sendable {

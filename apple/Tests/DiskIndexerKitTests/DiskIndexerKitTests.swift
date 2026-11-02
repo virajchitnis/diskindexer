@@ -150,4 +150,28 @@ struct DiskIndexerKitTests {
         j.state = .done
         #expect(j.fraction == 1)
     }
+
+    @Test func testIndexDraftExcludes() {
+        let disk = Disk(db: "d", id: 1, label: "D", description: "", createdAt: .now,
+                        lastIndexedAt: nil, excludes: [".snapshots", "lost+found"])
+        let node = DiskNode(label: "D", disks: [disk], collections: [])
+
+        // Reindex and Add Collection pre-fill the disk's remembered excludes.
+        var re = IndexDraft(node: node)
+        #expect(re.excludes == ".snapshots, lost+found")
+        #expect(re.request.excludes == [".snapshots", "lost+found"])
+        #expect(re.request.noDefaultExcludes == nil)
+        re.useDefaultExcludes = false
+        #expect(re.request.noDefaultExcludes == true)
+
+        var add = IndexDraft(addingTo: node)
+        #expect(add.excludes == ".snapshots, lost+found")
+        // Clearing the field is sent as [] so the disk's list is cleared,
+        // not silently reused.
+        add.excludes = " , "
+        #expect(add.request.excludes == [])
+
+        // A new disk starts empty.
+        #expect(IndexDraft().request.excludes == [])
+    }
 }

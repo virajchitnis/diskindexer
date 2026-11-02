@@ -31,10 +31,15 @@ type Options struct {
 	Collections []CollectionSpec
 	// Force wipes existing data before re-indexing from scratch.
 	Force bool
-	// Excludes is a list of directory names (or glob patterns) to skip at any
-	// depth during the walk. Files are never matched; only directories. Example:
-	// [".snapshots", "*.cache"]. Uses filepath.Match for pattern matching.
+	// Excludes are names or glob patterns (filepath.Match) of files and
+	// folders to skip at any depth, e.g. [".snapshots", "*.tmp"]; a skipped
+	// folder skips everything in it. They are saved with the disk. nil means
+	// "reuse the excludes saved with the disk"; an empty, non-nil slice means
+	// none.
 	Excludes []string
+	// DefaultExcludes always apply on top of Excludes (the configured
+	// default_excludes). They aren't saved with the disk.
+	DefaultExcludes []string
 	// ProgressFn is called periodically with cumulative progress.
 	// It may be called from any goroutine. Nil disables progress reporting.
 	ProgressFn func(ProgressUpdate)
@@ -51,7 +56,10 @@ type Stats struct {
 	// whatever was indexed under it before, rather than being emptied.
 	ErrorCount int
 	Errors     []PathError
-	Elapsed    time.Duration
+	// Excludes are the patterns this run actually skipped: the defaults plus
+	// the disk's own.
+	Excludes []string
+	Elapsed  time.Duration
 }
 
 // PathError is a file or folder the walk couldn't read.
@@ -112,6 +120,7 @@ type run struct {
 	phase, coll string
 	deleting    int
 	lastReport  time.Time
+	excludes    []string // effective: defaults + the disk's own
 
 	// unreadable holds index paths ("<disk>/...") of folders that couldn't
 	// be read. Files previously indexed under them are kept: an I/O error or
@@ -187,7 +196,15 @@ func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, err
 		return nil, fmt.Errorf("upsert disk: %w", err)
 	}
 
-	r := &run{ctx: ctx, db: database, diskID: disk.ID, opts: opts, stats: &Stats{}}
+	// Reuse the disk's saved excludes unless this run gives its own, which
+	// then replace them.
+	if opts.Excludes == nil {
+		opts.Excludes = disk.Excludes
+	} else if err := database.SetDiskExcludes(disk.ID, opts.Excludes); err != nil {
+		return nil, fmt.Errorf("save excludes: %w", err)
+	}
+	excludes := mergeExcludes(opts.DefaultExcludes, opts.Excludes)
+	r := &run{ctx: ctx, db: database, diskID: disk.ID, opts: opts, stats: &Stats{Excludes: excludes}, excludes: excludes}
 
 	if opts.Force {
 		r.setPhase("clearing", "")
@@ -209,7 +226,9 @@ func RunContext(ctx context.Context, database *db.DB, opts Options) (*Stats, err
 	r.total = len(r.fileMap)
 	r.seen = make(map[string]struct{}, len(r.fileMap))
 
-	colls, err := resolveCollections(database, disk.ID, opts)
+	resolveOpts := opts
+	resolveOpts.Excludes = excludes
+	colls, err := resolveCollections(database, disk.ID, resolveOpts)
 	if err != nil {
 		return nil, fmt.Errorf("resolve collections: %w", err)
 	}
@@ -371,9 +390,13 @@ func (r *run) walkCollection(coll *db.Collection) error {
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		// Skip excluded directories (and everything beneath them).
-		if d.IsDir() && absPath != coll.RootPath && isExcluded(d.Name(), r.opts.Excludes) {
-			return fs.SkipDir
+		// Skip excluded files and folders (and everything in them). Not
+		// marking them seen means previously indexed copies are removed.
+		if absPath != coll.RootPath && isExcluded(d.Name(), r.excludes) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 
 		r.seen[relPath] = struct{}{}
@@ -457,6 +480,9 @@ func (r *run) walkRoot(colls []*db.Collection) error {
 		if e.IsDir() {
 			continue // subdirs at disk root that aren't collections are not indexed here
 		}
+		if isExcluded(e.Name(), r.excludes) {
+			continue
+		}
 		relPath := diskLabel + "/" + e.Name()
 		info, err := e.Info()
 		if err != nil {
@@ -507,7 +533,23 @@ func isHidden(name string) bool {
 	return len(name) > 0 && name[0] == '.'
 }
 
-// isExcluded reports whether a directory name matches any of the given exclude
+// mergeExcludes combines exclude lists, dropping blanks and duplicates.
+func mergeExcludes(lists ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, p := range list {
+			p = strings.TrimSpace(p)
+			if p != "" && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// isExcluded reports whether a file or folder name matches any of the given exclude
 // patterns. Patterns follow filepath.Match syntax (e.g. ".snapshots", "*.tmp").
 // An invalid pattern is silently treated as a literal string comparison.
 func isExcluded(name string, excludes []string) bool {

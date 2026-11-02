@@ -106,6 +106,9 @@ default_db = "~/.config/diskindexer/global.diskindex"
 known_dbs = [
   "~/.config/diskindexer/global.diskindex",
 ]
+
+# Skipped by every index run (CLI and serve), on top of each disk's own excludes.
+default_excludes = [".snapshots", "lost+found"]
 ```
 
 ## CLI Commands
@@ -159,6 +162,7 @@ When a directory is selected in the TUI, allow the user to "enter" it and view i
 - **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
 - **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
 - **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
+- **Excludes**: patterns match file *and* folder names (`filepath.Match`) at any depth; excluded entries aren't marked seen, so previously indexed copies are removed. Effective excludes = `Options.DefaultExcludes` (config `default_excludes`, unless `--no-default-excludes` / `noDefaultExcludes`) ∪ the disk's own. `Options.Excludes == nil` reuses the disk's saved list (`disks.excludes`, JSON, added by a migration in `db.migrate`); a non-nil slice, even empty, replaces it. The app always sends the field, so clearing it clears the list.
 - **Index progress and errors**: `indexer.ProgressUpdate.Phase` runs loading → (clearing) → indexing (per collection) → root → deleting → sizes, and every phase is announced. Walk progress is time-throttled (`progressInterval`, 200ms) rather than per-batch, so runs of unchanged files still report. Walk errors never go to stderr; they're collected in `Stats.ErrorCount`/`Errors` (first 50), and a folder that can't be read is recorded in `run.unreadable` so files previously indexed under it are **not** deleted. Keep both rules: the index must not lose files just because a read failed.
 - **Moving collections**: `db.MoveCollection` rewrites only each path's leading disk label (renames don't rewrite paths, so the label part may be stale until a reindex) and the collection's disk; the FTS update trigger keeps search in sync. Same `.diskindex` only. `UpsertCollection` falls back to matching by (disk, label) when the root path is new, so reindexing after a move or after indexing from a copy updates the collection instead of duplicating it.
 - **No mount path**: with `--collection` and no mount path, `walkRoot` is skipped and the disk's root-level files (no collection) are never deleted; unlisted collections are preserved as always. This backs the app's "Add Collection…" for disks that aren't plugged in.
