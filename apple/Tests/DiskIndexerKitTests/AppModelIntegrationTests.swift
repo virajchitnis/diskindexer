@@ -120,6 +120,38 @@ final class FlakyTransport: Transport {
     func disconnect() { inner.disconnect() }
 }
 
+/// A server that "isn't running" until installed: connect fails like the SSH
+/// transport does (reason .notRunning) and installServer starts it.
+final class InstallableTransport: Transport, ServerManaging {
+    let displayName = "Fresh server"
+    let isLocal = false
+    var onDisconnect: (@Sendable (String) -> Void)? {
+        get { inner.onDisconnect }
+        set { inner.onDisconnect = newValue }
+    }
+    let inner: ServeTransport
+    private(set) var installed = false
+    let bundledVersion: String? = "1.3.1"
+
+    init(_ inner: ServeTransport) { self.inner = inner }
+
+    func connect() async throws -> Endpoint {
+        guard installed else {
+            throw ConnectionFailure("diskindexer isn't running on Fresh server", isTransient: true, reason: .notRunning)
+        }
+        return try await inner.connect()
+    }
+
+    func disconnect() { inner.disconnect() }
+
+    func installServer(progress: @escaping @Sendable (String) -> Void) async throws -> InstallReport {
+        progress("Copying diskindexer\u{2026}")
+        progress("Starting the service\u{2026}")
+        installed = true
+        return InstallReport(version: "v1.3.1", lingerEnabled: false, lingerCommand: "sudo loginctl enable-linger me")
+    }
+}
+
 /// A free loopback port for tests that need a stable address.
 private func freePort() throws -> Int {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -539,6 +571,31 @@ struct AppModelIntegrationTests {
 
         #expect(await eventually { model.jobs.first?.state == .interrupted })
         #expect(model.jobs.first?.error?.contains("Lost contact") == true)
+    }
+
+    @Test func setUpAServerThatIsNotRunning() async throws {
+        AppModel.maxRetryDelay = 0.1
+        defer { AppModel.maxRetryDelay = 30 }
+        let model = AppModel()
+        let fresh = InstallableTransport(ServeTransport(dbPath: scratchDB()))
+        model.connect(fresh)
+        defer { model.disconnect() }
+
+        // The UI can offer "Set Up" because it knows why it's waiting.
+        #expect(await eventually { model.lastFailure?.reason == .notRunning })
+        if case .waiting = model.status {} else { Issue.record("expected waiting, got \(model.status)") }
+        #expect(model.serverManager != nil)
+
+        await model.installServer()
+        guard case .done(let report) = model.install else {
+            Issue.record("install didn't finish: \(model.install)")
+            return
+        }
+        #expect(report.lingerCommand == "sudo loginctl enable-linger me")
+        #expect(await eventually { model.status == .connected })
+        #expect(model.lastFailure == nil)
+        model.dismissInstall()
+        #expect(model.install == .idle)
     }
 
     @Test func unreachableServerKeepsWaiting() async throws {

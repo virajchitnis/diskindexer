@@ -11,6 +11,7 @@ LDFLAGS := -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(VERSION) -X g
 
 BINARY              := diskindexer
 BINARY_LINUX        := diskindexer-linux-amd64
+BINARY_LINUX_ARM64  := diskindexer-linux-arm64
 BINARY_DARWIN_ARM64 := diskindexer-darwin-arm64
 BINARY_DARWIN_AMD64 := diskindexer-darwin-amd64
 SERVER              := viraj@enterprise.virajchitnis.com
@@ -28,13 +29,16 @@ CLT_DEV       := /Library/Developer/CommandLineTools/Library/Developer
 CLT_ACTIVE    := $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null))
 SWIFT_TEST    := swift test $(if $(CLT_ACTIVE),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app dmg install-mac test test-apple coverage coverage-go coverage-apple clean release
+.PHONY: build build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app dmg install-mac test test-apple coverage coverage-go coverage-apple clean release
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) .
 
 build-linux:
 	GOOS=linux GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BINARY_LINUX) .
+
+build-linux-arm64:
+	GOOS=linux GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BINARY_LINUX_ARM64) .
 
 build-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BINARY_DARWIN_ARM64) .
@@ -91,7 +95,9 @@ icon:
 # diskindexer binary bundled in Resources for local mode. Needs only the
 # Command Line Tools (no Xcode). Ad-hoc signed, so on another Mac the first
 # launch needs right-click > Open.
-mac-app: build-darwin-arm64 build-darwin-amd64 icon
+# The Linux binaries and systemd unit are bundled so the app can install or
+# update diskindexer on a Linux server over SSH.
+mac-app: build-darwin-arm64 build-darwin-amd64 build-linux build-linux-arm64 icon
 	cd apple && $(SWIFT_RELEASE) --triple arm64-apple-macosx14.0 --scratch-path .build/arm64
 	cd apple && $(SWIFT_RELEASE) --triple x86_64-apple-macosx14.0 --scratch-path .build/x86_64
 	rm -rf $(APP) $(APP_ZIP)
@@ -99,6 +105,7 @@ mac-app: build-darwin-arm64 build-darwin-amd64 icon
 	lipo -create apple/.build/arm64/release/DiskIndexerMac apple/.build/x86_64/release/DiskIndexerMac \
 		-output $(APP)/Contents/MacOS/DiskIndexer
 	lipo -create $(BINARY_DARWIN_ARM64) $(BINARY_DARWIN_AMD64) -output $(APP)/Contents/Resources/diskindexer
+	cp $(BINARY_LINUX) $(BINARY_LINUX_ARM64) deploy/diskindexer.service $(APP)/Contents/Resources/
 	cp build/icon/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	sed 's/__VERSION__/$(patsubst v%,%,$(VERSION))/g' apple/Info.plist > $(APP)/Contents/Info.plist
 	codesign --force --deep --sign - $(APP)
@@ -124,9 +131,10 @@ install-mac: mac-app
 	@echo "Installed $(MAC_APP_DIR)/DiskIndexer.app; CLI linked at $(MAC_BIN_DIR)/diskindexer"
 	@case ":$$PATH:" in *":$(MAC_BIN_DIR):"*) ;; *) echo "Note: $(MAC_BIN_DIR) isn't on your PATH." ;; esac
 
-release: build-linux build-darwin-arm64 build-darwin-amd64 mac-app dmg
+release: build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64 mac-app dmg
 	$(GH) release create $(VERSION) \
 		$(BINARY_LINUX) \
+		$(BINARY_LINUX_ARM64) \
 		$(BINARY_DARWIN_ARM64) \
 		$(BINARY_DARWIN_AMD64) \
 		$(APP_ZIP) \
@@ -135,5 +143,5 @@ release: build-linux build-darwin-arm64 build-darwin-amd64 mac-app dmg
 		--notes-file RELEASE_NOTES.md
 
 clean:
-	rm -f $(BINARY) $(BINARY_LINUX) $(BINARY_DARWIN_ARM64) $(BINARY_DARWIN_AMD64)
+	rm -f $(BINARY) $(BINARY_LINUX) $(BINARY_LINUX_ARM64) $(BINARY_DARWIN_ARM64) $(BINARY_DARWIN_AMD64)
 	rm -rf build apple/.build coverage.out

@@ -4,12 +4,26 @@ import Foundation
 /// Transports throw it from connect(); AppModel keeps retrying transient ones
 /// ("Waiting for …") and stops on the rest.
 public struct ConnectionFailure: LocalizedError, Sendable {
+    /// Why it failed, when the UI can do something specific about it.
+    public enum Reason: Sendable {
+        /// The address couldn't be reached (network, DNS, Tailscale down).
+        case unreachable
+        /// The server is reachable but diskindexer isn't running there: offer
+        /// to install or set it up.
+        case notRunning
+        /// The server's diskindexer is too old (or new) for this app: offer
+        /// to update it.
+        case incompatibleVersion
+    }
+
     public var message: String
     public var isTransient: Bool
+    public var reason: Reason?
 
-    public init(_ message: String, isTransient: Bool) {
+    public init(_ message: String, isTransient: Bool, reason: Reason? = nil) {
         self.message = message
         self.isTransient = isTransient
+        self.reason = reason
     }
 
     public var errorDescription: String? { message }

@@ -77,7 +77,12 @@ struct ContentView: View {
         switch model.status {
         case .connected:
             let n = model.diskNodes.count
-            return n == 1 ? "1 disk" : "\(n) disks"
+            let disks = n == 1 ? "1 disk" : "\(n) disks"
+            // Which address is in use, when a server has several.
+            if let r = store.selectedRemote, r.addresses.count > 1, let via = model.transport?.activeAddress {
+                return "\(disks) \u{00B7} via \(via)"
+            }
+            return disks
         case .connecting: return "Connecting…"
         case .waiting: return "Waiting for connection…"
         case .reconnecting: return "Reconnecting…"
@@ -122,7 +127,7 @@ struct ConnectionMenu: View {
             }
             Divider()
             Button("Add Server…") {
-                onEdit(RemoteConnection(name: "", host: ""))
+                onEdit(RemoteConnection(name: "", hosts: [""]))
             }
             if let r = store.selectedRemote {
                 Button("Edit \"\(r.name)\"…") { onEdit(r) }
@@ -168,13 +173,33 @@ struct RemoteEditor: View {
             Form {
                 Section {
                     TextField("Name", text: $remote.name, prompt: Text("Home server"))
-                    TextField("SSH host", text: $remote.host, prompt: Text("enterprise or user@example.com"))
                     TextField("Socket path", text: $remote.socketPath, prompt: Text(SSHTunnel.defaultSocket))
+                }
+                Section {
+                    ForEach(remote.hosts.indices, id: \.self) { i in
+                        HStack {
+                            TextField("Address \(i + 1)", text: $remote.hosts[i],
+                                      prompt: Text(i == 0 ? "192.168.1.10 or enterprise" : "enterprise.tailnet.ts.net"))
+                                .labelsHidden()
+                            Button {
+                                remote.hosts.swapAt(i, i - 1)
+                            } label: { Image(systemName: "arrow.up") }
+                                .disabled(i == 0)
+                                .help("Try this address earlier")
+                            Button {
+                                remote.hosts.remove(at: i)
+                            } label: { Image(systemName: "minus.circle") }
+                                .disabled(remote.hosts.count == 1)
+                                .help("Remove this address")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    Button("Add Address") { remote.hosts.append("") }
+                } header: {
+                    Text("Addresses")
                 } footer: {
                     Text("""
-                        The server must be running `diskindexer serve` (see `make install-service`). \
-                        The app connects with /usr/bin/ssh using your ~/.ssh/config and ssh-agent, so \
-                        run `ssh <host>` in Terminal once first to accept the host key.
+                        Tried in order; the first that answers is used, and every reconnect starts again                         from the top. Put the home network address first and the Tailscale name after it                         to switch automatically. Each is anything ssh accepts: an ~/.ssh/config alias,                         a host name or IP, or user@host. The app uses your ~/.ssh/config and ssh-agent,                         so run `ssh <address>` in Terminal once first to accept each host key.
                         """)
                     .foregroundStyle(.secondary)
                 }
@@ -187,15 +212,15 @@ struct RemoteEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add and Connect" : "Save and Connect") {
                     var r = remote
-                    r.host = r.host.trimmingCharacters(in: .whitespaces)
-                    if r.name.trimmingCharacters(in: .whitespaces).isEmpty { r.name = r.host }
+                    r.hosts = r.addresses
+                    if r.name.trimmingCharacters(in: .whitespaces).isEmpty { r.name = r.hosts[0] }
                     onDone(r)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(remote.host.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(remote.addresses.isEmpty)
             }
             .padding(12)
         }
-        .frame(width: 460)
+        .frame(width: 480)
     }
 }

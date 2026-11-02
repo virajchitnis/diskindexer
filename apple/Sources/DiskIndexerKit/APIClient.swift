@@ -23,6 +23,13 @@ public protocol Transport: AnyObject {
     var onDisconnect: (@Sendable (String) -> Void)? { get set }
     func connect() async throws -> Endpoint
     func disconnect()
+    /// The address in use when a server has several (e.g. LAN, then
+    /// Tailscale), for showing in the UI. nil when there's only one way in.
+    var activeAddress: String? { get }
+}
+
+public extension Transport {
+    var activeAddress: String? { nil }
 }
 
 public struct APIError: LocalizedError, Sendable {

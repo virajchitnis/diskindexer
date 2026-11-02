@@ -332,6 +332,15 @@ The app is ad-hoc signed, not signed with an Apple Developer ID, so a copy **dow
 
 ### Set up a server
 
+**From the app (Linux servers with systemd):**
+1. Choose **Add Server…** in the connection menu and enter its address.
+2. If diskindexer isn't running there, the "Waiting for …" screen offers **Set Up diskindexer on …**. It copies the right Linux binary (amd64 or arm64, bundled in the app) to `~/.local/bin/diskindexer` over SSH, and installs and starts the systemd user service.
+3. Keeping the service running while you're logged out needs `sudo loginctl enable-linger $USER`. The app turns this on if `sudo` works without a password; otherwise it shows the command to run once.
+
+**Updating:** when the server runs an older diskindexer than the app includes, a banner offers **Update…**. It asks first, warns if index runs are in progress (restarting stops them), and then replaces the binary and restarts the service. Your indexes and config aren't touched. The app never downgrades a newer server.
+
+**From a terminal instead:**
+
 1. Install the binary and the systemd user service:
 
    ```bash
@@ -347,6 +356,8 @@ The app is ad-hoc signed, not signed with an Apple Developer ID, so a copy **dow
    ```
 
 3. In the app, choose **Add Server…** from the connection menu and enter the SSH host. A `~/.ssh/config` alias works.
+
+**Several addresses:** a server can have more than one address, tried in order, for example its home-network IP first and its Tailscale name second. The first one that answers is used, and every reconnect starts again from the top. So the app connects directly at home and over Tailscale elsewhere without you changing anything. The window subtitle shows which address is in use. Addresses that aren't last get a short timeout, so failing over is quick. (Tailscale alone often manages this too: between two machines on the same LAN, it connects them directly.)
 
 How the connection works:
 - The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server.

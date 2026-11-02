@@ -4,14 +4,20 @@ import Foundation
 /// Reaches `diskindexer serve` on a remote host by forwarding a local loopback
 /// port to the server's Unix socket with the system ssh. Authentication,
 /// host keys and host aliases all come from ~/.ssh/config and ssh-agent.
-final class SSHTunnel: Transport {
-    let host: String
+///
+/// A server can have several addresses (e.g. its LAN IP, then its Tailscale
+/// name); each connect tries them in order and uses the first that answers.
+/// It also installs and updates diskindexer on Linux servers with systemd.
+final class SSHTunnel: Transport, ServerManaging {
+    let hosts: [String]
     /// Remote socket path; nil means the server default. A leading "~/" is
     /// resolved against the remote $HOME.
     let socketPath: String?
     let displayName: String
     let isLocal = false
     var onDisconnect: (@Sendable (String) -> Void)?
+    /// The address the current connection uses.
+    private(set) var activeAddress: String?
 
     private var process: Process?
     /// Write end of the wrapper's stdin; closing it stops ssh (see diesWithParent).
@@ -21,26 +27,31 @@ final class SSHTunnel: Transport {
     static let ssh = "/usr/bin/ssh"
     static let defaultSocket = "~/.config/diskindexer/server.sock"
 
-    init(name: String, host: String, socketPath: String?) {
+    init(name: String, hosts: [String], socketPath: String?) {
         self.displayName = name
-        self.host = host
+        self.hosts = hosts
         self.socketPath = socketPath
     }
 
     /// Options shared by every ssh invocation. BatchMode makes ssh fail rather
     /// than prompt, since there's no terminal; ControlPath=none keeps a
-    /// multiplexed master connection from swallowing our forward.
-    private var commonOptions: [String] {
-        ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlPath=none"]
+    /// multiplexed master connection from swallowing our forward. Addresses
+    /// that aren't the last get a short timeout, so an unreachable LAN
+    /// address fails over quickly.
+    private func options(timeout: Int = 10) -> [String] {
+        ["-o", "BatchMode=yes", "-o", "ConnectTimeout=\(timeout)", "-o", "ControlPath=none"]
     }
 
     func connect() async throws -> Endpoint {
         stopping.set(false)
-        let socket = try await resolveSocket()
+        let (host, socket) = try await firstReachable(hosts) { host, isLast in
+            try await resolveSocket(on: host, timeout: isLast ? 10 : 4)
+        }
+        activeAddress = host
         let port = try freeLoopbackPort()
 
         // Run ssh through a wrapper so the tunnel can't outlive the app.
-        let cmd = diesWithParent(Self.ssh, commonOptions + [
+        let cmd = diesWithParent(Self.ssh, options() + [
             "-N",
             "-o", "ExitOnForwardFailure=yes",
             // Notice a dead link (Tailscale down, Wi-Fi change, sleep) in ~15s.
@@ -75,7 +86,7 @@ final class SSHTunnel: Transport {
         while Date() < deadline {
             if !p.isRunning {
                 process = nil
-                throw sshFailure(errBuf.text)
+                throw sshFailure(errBuf.text, host: host)
             }
             if (try? await client.info()) != nil {
                 return endpoint
@@ -88,11 +99,13 @@ final class SSHTunnel: Transport {
     }
 
     /// Turns ssh's stderr into a failure with advice that fits the cause.
-    private func sshFailure(_ stderr: String) -> ConnectionFailure {
+    /// Network-type failures are `.unreachable`, so the next address is tried.
+    private func sshFailure(_ stderr: String, host: String) -> ConnectionFailure {
         let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         switch SSHFailureKind.classify(detail) {
         case .network:
-            return ConnectionFailure("Can\u{2019}t reach \(host): \(detail)\nCheck that the server is on and the network (or Tailscale) is connected.", isTransient: true)
+            return ConnectionFailure("Can\u{2019}t reach \(host): \(detail)\nCheck that the server is on and the network (or Tailscale) is connected.",
+                                     isTransient: true, reason: .unreachable)
         case .hostKey:
             return ConnectionFailure("""
                 \(host)\u{2019}s host key isn\u{2019}t trusted: \(detail)
@@ -104,13 +117,14 @@ final class SSHTunnel: Transport {
                 The app uses your ~/.ssh/config and ssh-agent and can\u{2019}t type a password. Make sure \u{201C}ssh \(host)\u{201D} works in Terminal without prompting.
                 """, isTransient: false)
         case .other:
-            return ConnectionFailure("SSH to \(host) failed: \(detail.isEmpty ? "ssh exited" : detail)", isTransient: true)
+            return ConnectionFailure("SSH to \(host) failed: \(detail.isEmpty ? "ssh exited" : detail)",
+                                     isTransient: true, reason: .unreachable)
         }
     }
 
     /// Logs in once to turn the socket path into an absolute one and to check
     /// the server is running, so failures come with a useful message.
-    private func resolveSocket() async throws -> String {
+    private func resolveSocket(on host: String, timeout: Int) async throws -> String {
         let path = socketPath?.trimmingCharacters(in: .whitespaces).nilIfEmpty ?? Self.defaultSocket
         guard !path.contains("'") else {
             throw ProcessFailure(message: "The socket path can't contain a single quote.")
@@ -119,20 +133,21 @@ final class SSHTunnel: Transport {
         // Run through sh explicitly so it works whatever the login shell is.
         let script = #"p="\#(shellPath)"; if [ -S "$p" ]; then printf '%s\n' "$p"; else printf 'missing %s\n' "$p"; exit 3; fi"#
         let command = "sh -c '" + script.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
-        let r = try await runCommand(Self.ssh, commonOptions + [host, command])
+        let r = try await runCommand(Self.ssh, options(timeout: timeout) + [host, command])
         let out = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         switch r.status {
         case 0 where out.hasPrefix("/"):
             return out
         case 3:
-            // Retried: the service may just be restarting.
+            // Retried: the service may just be restarting. The app also
+            // offers to install or set it up.
             let missing = out.replacingOccurrences(of: "missing ", with: "")
             throw ConnectionFailure("""
-                diskindexer isn't running on \(host): no socket at \(missing).
-                Start it there with `systemctl --user start diskindexer` (set up with `make install-service`), or run `diskindexer serve`.
-                """, isTransient: true)
+                diskindexer isn't running on \(displayName): no socket at \(missing).
+                Set it up from here, or start it there with `systemctl --user start diskindexer`.
+                """, isTransient: true, reason: .notRunning)
         case 255:
-            throw sshFailure(r.stderr)
+            throw sshFailure(r.stderr, host: host)
         default:
             throw ConnectionFailure("Checking diskindexer on \(host) failed: \(r.stderr.isEmpty ? out : r.stderr)", isTransient: true)
         }
@@ -145,6 +160,118 @@ final class SSHTunnel: Transport {
         try? lifeline?.fileHandleForWriting.close()
         lifeline = nil
         process = nil
+    }
+
+    // MARK: Installing and updating the server
+
+    var bundledVersion: String? {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+
+    /// Uploads the matching bundled Linux binary to ~/.local/bin/diskindexer
+    /// (via a rename, so a running copy isn't disturbed), writes the systemd
+    /// user unit, and (re)starts the service. Lingering, which keeps it
+    /// running while logged out, needs sudo: it's enabled if sudo works
+    /// without a password, otherwise reported with the command to run.
+    func installServer(progress: @escaping @Sendable (String) -> Void) async throws -> InstallReport {
+        progress("Connecting to \(displayName)\u{2026}")
+        let (host, platform) = try await firstReachable(activeAddress.map { [$0] + hosts.filter { $0 != activeAddress } } ?? hosts) { host, isLast in
+            try await preflight(on: host, timeout: isLast ? 10 : 4)
+        }
+
+        guard platform.hasSystemd else {
+            throw ProcessFailure(message: """
+                \(displayName) doesn\u{2019}t use systemd, so the app can\u{2019}t set up the service there. \
+                Copy diskindexer to it and run `diskindexer serve` as a service yourself (see the README).
+                """)
+        }
+        let binaryName: String
+        switch platform.machine {
+        case "x86_64", "amd64": binaryName = "diskindexer-linux-amd64"
+        case "aarch64", "arm64": binaryName = "diskindexer-linux-arm64"
+        default:
+            throw ProcessFailure(message: "The app doesn\u{2019}t include diskindexer for \(platform.os) \(platform.machine).")
+        }
+        guard platform.os == "Linux" else {
+            throw ProcessFailure(message: "Automatic setup supports Linux servers; \(displayName) runs \(platform.os). See the README to set it up by hand.")
+        }
+        guard let binary = Bundle.main.url(forResource: binaryName, withExtension: nil),
+              let unitURL = Bundle.main.url(forResource: "diskindexer", withExtension: "service"),
+              let unit = try? String(contentsOf: unitURL, encoding: .utf8) else {
+            throw ProcessFailure(message: "This build of the app doesn\u{2019}t include the server files (build it with `make mac-app`).")
+        }
+
+        progress("Copying diskindexer to \(displayName) (\(platform.os) \(platform.machine))\u{2026}")
+        let upload = "mkdir -p ~/.local/bin && cat > ~/.local/bin/diskindexer.new && chmod +x ~/.local/bin/diskindexer.new && mv ~/.local/bin/diskindexer.new ~/.local/bin/diskindexer"
+        let up = try await runCommand(Self.ssh, options() + [host, upload], stdin: .file(binary))
+        guard up.status == 0 else {
+            throw ProcessFailure(message: "Copying diskindexer failed: \(up.stderr)")
+        }
+
+        progress("Setting up and starting the service\u{2026}")
+        let r = try await runCommand(Self.ssh, options() + [host, "sh -s"], stdin: .text(Self.serviceScript(unit: unit)))
+        let lines = r.stdout.split(separator: "\n").map(String.init)
+        guard r.status == 0 else {
+            throw ProcessFailure(message: "Starting the service failed:\n\((lines + [r.stderr]).joined(separator: "\n"))")
+        }
+        func value(_ key: String) -> String? {
+            lines.first { $0.hasPrefix(key + "=") }.map { String($0.dropFirst(key.count + 1)) }
+        }
+        let version = value("version")?.split(separator: " ").dropFirst().first.map(String.init) ?? "unknown"
+        let linger = value("linger") == "yes"
+        let user = value("user") ?? "$USER"
+        progress("diskindexer \(version) is running on \(displayName).")
+        return InstallReport(version: version, lingerEnabled: linger,
+                             lingerCommand: linger ? nil : "sudo loginctl enable-linger \(user)")
+    }
+
+    private struct Platform {
+        var os: String
+        var machine: String
+        var hasSystemd: Bool
+    }
+
+    private func preflight(on host: String, timeout: Int) async throws -> Platform {
+        let r = try await runCommand(Self.ssh, options(timeout: timeout) + [host,
+            "uname -sm; command -v systemctl >/dev/null 2>&1 && echo systemd || echo none"])
+        guard r.status == 0 else {
+            throw r.status == 255 ? sshFailure(r.stderr, host: host)
+                : ProcessFailure(message: "Couldn\u{2019}t inspect \(host): \(r.stderr)")
+        }
+        let lines = r.stdout.split(separator: "\n")
+        let uname = lines.first?.split(separator: " ").map(String.init) ?? []
+        return Platform(os: uname.first ?? "?", machine: uname.dropFirst().first ?? "?",
+                        hasSystemd: lines.dropFirst().first == "systemd")
+    }
+
+    /// Run on the server with `sh -s`: installs the unit, restarts the
+    /// service, waits for its socket, and reports linger and the version.
+    static func serviceScript(unit: String) -> String {
+        """
+        set -e
+        unit_dir="$HOME/.config/systemd/user"
+        mkdir -p "$unit_dir"
+        cat > "$unit_dir/diskindexer.service" <<'DISKINDEXER_UNIT'
+        \(unit.trimmingCharacters(in: .newlines))
+        DISKINDEXER_UNIT
+        systemctl --user daemon-reload
+        systemctl --user enable diskindexer >/dev/null 2>&1
+        systemctl --user restart diskindexer
+        sock="$HOME/.config/diskindexer/server.sock"
+        i=0
+        while [ ! -S "$sock" ] && [ $i -lt 40 ]; do sleep 0.25; i=$((i+1)); done
+        if [ ! -S "$sock" ]; then
+          echo "The service didn't start:"
+          systemctl --user --no-pager status diskindexer 2>&1 | tail -8
+          exit 1
+        fi
+        user=$(id -un)
+        echo "user=$user"
+        linger=$(loginctl show-user "$user" -p Linger --value 2>/dev/null || echo unknown)
+        if [ "$linger" != yes ] && sudo -n loginctl enable-linger "$user" 2>/dev/null; then linger=yes; fi
+        echo "linger=$linger"
+        echo "version=$("$HOME/.local/bin/diskindexer" --version)"
+        """
     }
 }
 

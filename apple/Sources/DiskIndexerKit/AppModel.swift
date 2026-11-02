@@ -47,6 +47,24 @@ public final class AppModel {
     /// When the current wait between connection attempts ends, so the UI can
     /// say "retrying in 8s".
     public private(set) var nextAttempt: Date?
+    /// The most recent connection failure, so the UI can offer to install or
+    /// update diskindexer when that's the problem.
+    public private(set) var lastFailure: ConnectionFailure?
+
+    /// The server runs an older diskindexer than this app bundles: the UI
+    /// offers to update it.
+    public private(set) var serverUpdate: (current: String, available: String)?
+    public private(set) var install: InstallState = .idle
+
+    public enum InstallState: Equatable {
+        case idle
+        case running([String])
+        case done(InstallReport)
+        case failed(String, [String])
+    }
+
+    /// The transport, if it can install diskindexer on its server.
+    public var serverManager: ServerManaging? { transport as? ServerManaging }
 
     // Metadata
     public private(set) var diskNodes: [DiskNode] = []
@@ -159,11 +177,14 @@ public final class AppModel {
                 let client = APIClient(endpoint: endpoint)
                 let info = try await client.info()
                 guard info.apiVersion == supportedAPIVersion else {
-                    throw ConnectionFailure("Server speaks API v\(info.apiVersion); this app needs v\(supportedAPIVersion). Update diskindexer on \(transport.displayName).", isTransient: false)
+                    throw ConnectionFailure("Server speaks API v\(info.apiVersion); this app needs v\(supportedAPIVersion). Update diskindexer on \(transport.displayName).",
+                                            isTransient: false, reason: .incompatibleVersion)
                 }
                 guard !Task.isCancelled, self.transport === transport else { return }
                 self.client = client
                 self.info = info
+                lastFailure = nil
+                serverUpdate = Self.updateAvailable(server: info.version, bundled: serverManager?.bundledVersion)
                 status = .connected
                 await refreshMetadata()
                 await refreshJobs()
@@ -172,7 +193,8 @@ public final class AppModel {
             } catch {
                 guard !Task.isCancelled, self.transport === transport else { return }
                 let message = error.localizedDescription
-                let versionMismatch = (error as? ConnectionFailure)?.isTransient == false && message.contains("API v")
+                lastFailure = error as? ConnectionFailure ?? ConnectionFailure(message, isTransient: error.isTransientConnectionError)
+                let versionMismatch = lastFailure?.reason == .incompatibleVersion
                 let retry = !versionMismatch && (retrying || alwaysRetry || error.isTransientConnectionError)
                 guard retry else {
                     status = .failed(message)
@@ -185,6 +207,50 @@ public final class AppModel {
                 delay = min(delay * 2, Self.maxRetryDelay)
             }
         }
+    }
+
+    /// Whether the bundled version is newer than the server's. Untagged
+    /// development builds don't compare, so they never prompt.
+    nonisolated static func updateAvailable(server: String, bundled: String?) -> (current: String, available: String)? {
+        guard let bundled, let b = ServerVersion(bundled), let s = ServerVersion(server), s < b else { return nil }
+        return (server, bundled)
+    }
+
+    /// Installs or updates diskindexer on the server, then reconnects. The
+    /// UI asks for confirmation first (and warns about running jobs, which a
+    /// restart stops).
+    public func installServer() async {
+        guard let manager = serverManager, let transport else { return }
+        if case .running = install { return }
+        var log: [String] = []
+        install = .running(log)
+        let lines = AsyncStream<String> { cont in
+            Task.detached {
+                do {
+                    let report = try await manager.installServer { line in cont.yield(line) }
+                    await MainActor.run { self.install = .done(report) }
+                } catch {
+                    let message = error.localizedDescription
+                    await MainActor.run {
+                        if case .running(let l) = self.install { self.install = .failed(message, l) }
+                    }
+                }
+                cont.finish()
+            }
+        }
+        for await line in lines {
+            log.append(line)
+            if case .running = install { install = .running(log) }
+        }
+        if case .done = install {
+            serverUpdate = nil
+            connect(transport)
+        }
+    }
+
+    public func dismissInstall() {
+        if case .running = install { return }
+        install = .idle
     }
 
     /// Longest wait between connection attempts. A var so tests can shorten it.

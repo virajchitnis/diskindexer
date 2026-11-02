@@ -30,11 +30,28 @@ final class OutputBuffer: @unchecked Sendable {
 }
 
 /// Runs a short-lived command and returns its exit status and output.
-func runCommand(_ executable: String, _ args: [String]) async throws -> (status: Int32, stdout: String, stderr: String) {
+/// `stdin` is a file to feed it (e.g. a binary to upload over ssh) or text.
+enum CommandInput {
+    case none
+    case file(URL)
+    case text(String)
+}
+
+func runCommand(_ executable: String, _ args: [String], stdin: CommandInput = .none) async throws -> (status: Int32, stdout: String, stderr: String) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: executable)
     p.arguments = args
-    p.standardInput = FileHandle.nullDevice
+    var textInput: (Pipe, Data)?
+    switch stdin {
+    case .none:
+        p.standardInput = FileHandle.nullDevice
+    case .file(let url):
+        p.standardInput = try FileHandle(forReadingFrom: url)
+    case .text(let text):
+        let pipe = Pipe()
+        p.standardInput = pipe
+        textInput = (pipe, Data(text.utf8))
+    }
     let out = Pipe(), err = Pipe()
     p.standardOutput = out
     p.standardError = err
@@ -48,6 +65,13 @@ func runCommand(_ executable: String, _ args: [String]) async throws -> (status:
         }
         do {
             try p.run()
+            // Written after launch, then closed so the command sees EOF.
+            if let (pipe, data) = textInput {
+                DispatchQueue.global().async {
+                    pipe.fileHandleForWriting.write(data)
+                    try? pipe.fileHandleForWriting.close()
+                }
+            }
         } catch {
             cont.resume(throwing: error)
         }

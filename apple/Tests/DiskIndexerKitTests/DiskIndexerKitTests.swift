@@ -174,4 +174,60 @@ struct DiskIndexerKitTests {
         // A new disk starts empty.
         #expect(IndexDraft().request.excludes == [])
     }
+
+    @Test func testServerVersion() throws {
+        let tagged = try #require(ServerVersion("v1.3.1"))
+        let ahead = try #require(ServerVersion("v1.3.1-20-ge0ee61b"))
+        let dirty = try #require(ServerVersion("1.3.1-20-ge0ee61b-dirty"))
+        let next = try #require(ServerVersion("v1.4.0"))
+        #expect(tagged < ahead)
+        #expect(!(ahead < dirty) && !(dirty < ahead), "dirty doesn't change the version")
+        #expect(ahead < next)
+        #expect(ServerVersion("v1.10.0")! > ServerVersion("v1.9.9")!)
+        #expect(ServerVersion("dev") == nil)
+        #expect(ServerVersion("e0ee61b") == nil, "untagged builds don't compare")
+        #expect(ahead.description == "1.3.1+20")
+
+        #expect(AppModel.updateAvailable(server: "v1.3.1", bundled: "1.3.1-20-gabc")?.available == "1.3.1-20-gabc")
+        #expect(AppModel.updateAvailable(server: "v1.3.1-20-gabc", bundled: "1.3.1-20-gabc-dirty") == nil)
+        #expect(AppModel.updateAvailable(server: "v1.4.0", bundled: "1.3.1") == nil, "never downgrade")
+        #expect(AppModel.updateAvailable(server: "dev", bundled: "1.3.1") == nil)
+        #expect(AppModel.updateAvailable(server: "v1.3.1", bundled: nil) == nil)
+    }
+
+    @Test func testFirstReachable() async throws {
+        let unreachable = ConnectionFailure("no route", isTransient: true, reason: .unreachable)
+
+        // Falls through unreachable addresses to the first that works.
+        var tried: [String] = []
+        let r = try await firstReachable(["lan", "tailscale", "public"]) { host, isLast in
+            tried.append(host)
+            if host == "lan" { throw unreachable }
+            return isLast
+        }
+        #expect(r.address == "tailscale")
+        #expect(r.value == false)
+        #expect(tried == ["lan", "tailscale"])
+
+        // A reachable server that refuses stops the search: every address
+        // would say the same.
+        tried = []
+        await #expect(throws: ConnectionFailure.self) {
+            _ = try await firstReachable(["lan", "tailscale"]) { host, _ in
+                tried.append(host)
+                throw ConnectionFailure("refused the login", isTransient: false)
+            }
+        }
+        #expect(tried == ["lan"])
+
+        // None reachable: one transient error listing each address.
+        do {
+            let _: (address: String, value: Bool) = try await firstReachable(["lan", "tailscale"]) { _, _ in throw unreachable }
+            Issue.record("expected a failure")
+        } catch let f as ConnectionFailure {
+            #expect(f.isTransient)
+            #expect(f.reason == .unreachable)
+            #expect(f.message == "lan: no route\ntailscale: no route")
+        }
+    }
 }

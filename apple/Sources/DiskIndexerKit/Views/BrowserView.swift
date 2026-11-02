@@ -22,6 +22,8 @@ public struct BrowserView: View {
     @State private var showInspector = false
     @State private var showJobs = false
     @State private var indexDraft: IndexDraft?
+    @State private var confirmInstall = false
+    @State private var dismissedUpdate: String?
 
     public init(model: AppModel) {
         self.model = model
@@ -96,6 +98,57 @@ public struct BrowserView: View {
         } message: {
             Text(model.actionError ?? "")
         }
+        .confirmationDialog(installTitle, isPresented: $confirmInstall, titleVisibility: .visible) {
+            Button(installButtonTitle) { Task { await model.installServer() } }
+        } message: {
+            Text(installMessage)
+        }
+        .sheet(isPresented: Binding(
+            get: { model.install != .idle },
+            set: { if !$0 { model.dismissInstall() } }
+        )) {
+            InstallProgressView(model: model)
+        }
+    }
+
+    // MARK: Install / update
+
+    private var serverName: String { model.transport?.displayName ?? "the server" }
+    private var isUpdate: Bool { model.status == .connected || model.lastFailure?.reason == .incompatibleVersion }
+
+    private var installTitle: String {
+        isUpdate ? "Update diskindexer on \(serverName)?" : "Set up diskindexer on \(serverName)?"
+    }
+
+    private var installButtonTitle: String { isUpdate ? "Update" : "Set Up" }
+
+    private var installMessage: String {
+        let version = model.serverManager?.bundledVersion.map { " \($0)" } ?? ""
+        var text = """
+            This copies diskindexer\(version) to ~/.local/bin on \(serverName) over SSH, and sets up \
+            and restarts its service (a systemd user service). Your indexes and settings there aren\u{2019}t changed.
+            """
+        let running = model.runningJobs.count
+        if running > 0 {
+            text += "\n\n\(running == 1 ? "An index run is" : "\(running) index runs are") in progress and will stop. Files indexed so far are kept."
+        }
+        return text
+    }
+
+    /// Install/Update button for the waiting and failed screens, when the
+    /// server is reachable but diskindexer isn't running or is incompatible.
+    @ViewBuilder
+    private var installButton: some View {
+        if model.serverManager != nil {
+            switch model.lastFailure?.reason {
+            case .notRunning:
+                Button("Set Up diskindexer on \(serverName)\u{2026}") { confirmInstall = true }
+            case .incompatibleVersion:
+                Button("Update diskindexer on \(serverName)\u{2026}") { confirmInstall = true }
+            default:
+                EmptyView()
+            }
+        }
     }
 
     @ViewBuilder
@@ -111,9 +164,16 @@ public struct BrowserView: View {
                     .clipped()
                 // Below the table, not above it: the table extends under the
                 // toolbar and pins its column header over anything on top.
+                if let update = model.serverUpdate, model.status == .connected, dismissedUpdate != update.available {
+                    Divider()
+                    Banner(systemImage: "arrow.up.circle", actionTitle: "Update\u{2026}", action: { confirmInstall = true },
+                           dismiss: { dismissedUpdate = update.available }) {
+                        Text("\(serverName) runs diskindexer \(update.current); this app includes \(update.available).")
+                    }
+                }
                 if case let .reconnecting(reason) = model.status {
                     Divider()
-                    Banner(systemImage: "wifi.exclamationmark", retry: model.retryNow) {
+                    Banner(systemImage: "wifi.exclamationmark", action: model.retryNow) {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 4) {
                                 Text("Reconnecting to \(model.transport?.displayName ?? "the server")")
@@ -140,7 +200,10 @@ public struct BrowserView: View {
                     RetryCountdown(until: model.nextAttempt)
                 }
             } actions: {
-                Button("Try Now", action: model.retryNow)
+                HStack {
+                    installButton
+                    Button("Try Now", action: model.retryNow)
+                }
             }
         case .failed(let message):
             ContentUnavailableView {
@@ -148,7 +211,10 @@ public struct BrowserView: View {
             } description: {
                 Text(message).textSelection(.enabled)
             } actions: {
-                Button("Try Again", action: model.retryNow)
+                HStack {
+                    installButton
+                    Button("Try Again", action: model.retryNow)
+                }
             }
         case .disconnected:
             ContentUnavailableView("Not connected", systemImage: "externaldrive.badge.questionmark",
@@ -159,7 +225,9 @@ public struct BrowserView: View {
 
 struct Banner<Content: View>: View {
     var systemImage: String
-    var retry: (() -> Void)?
+    var actionTitle = "Try Now"
+    var action: (() -> Void)?
+    var dismiss: (() -> Void)?
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -167,9 +235,14 @@ struct Banner<Content: View>: View {
             Image(systemName: systemImage)
             content
             Spacer()
-            if let retry {
-                Button("Try Now", action: retry)
+            if let action {
+                Button(actionTitle, action: action)
                     .controlSize(.small)
+            }
+            if let dismiss {
+                Button(action: dismiss) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide until the next version")
             }
         }
         .font(.callout)
@@ -238,5 +311,61 @@ struct StatusBar: View {
         let n = model.results.count
         if model.capped { return "\(n)+ results, refine your search to see more" }
         return n == 1 ? "1 result" : "\(n) results"
+    }
+}
+
+/// Progress and outcome of installing or updating diskindexer on a server.
+struct InstallProgressView: View {
+    var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            switch model.install {
+            case .idle:
+                EmptyView()
+            case .running(let log):
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Setting up diskindexer\u{2026}").font(.headline)
+                }
+                logView(log)
+            case .done(let report):
+                Label("diskindexer \(report.version) is running", systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                if let cmd = report.lingerCommand {
+                    Text("To keep it running while you\u{2019}re logged out of the server, run this there once (it needs your password):")
+                    HStack {
+                        Text(cmd).font(.body.monospaced()).textSelection(.enabled)
+                        Spacer()
+                        Button("Copy") { copyToPasteboard(cmd) }
+                    }
+                    .padding(8)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                }
+            case .failed(let message, let log):
+                Label("Setup failed", systemImage: "xmark.octagon.fill")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+                logView(log)
+                Text(message).foregroundStyle(.red).textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Close") { model.dismissInstall() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled({ if case .running = model.install { return true } else { return false } }())
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func logView(_ lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.callout).foregroundStyle(.secondary)
+            }
+        }
     }
 }
