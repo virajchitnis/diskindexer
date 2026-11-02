@@ -17,6 +17,10 @@ SERVER              := viraj@enterprise.virajchitnis.com
 
 APP           := build/DiskIndexer.app
 APP_ZIP       := build/DiskIndexer-macOS.zip
+DMG           := build/DiskIndexer.dmg
+# install-mac destinations.
+MAC_APP_DIR   ?= /Applications
+MAC_BIN_DIR   ?= $(HOME)/.local/bin
 SWIFT_RELEASE := swift build -c release --product DiskIndexerMac
 # Command Line Tools ship swift-testing but not on the default search path.
 # Only add it when CLT is the active toolchain; full Xcode finds its own.
@@ -24,7 +28,7 @@ CLT_DEV       := /Library/Developer/CommandLineTools/Library/Developer
 CLT_ACTIVE    := $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null))
 SWIFT_TEST    := swift test $(if $(CLT_ACTIVE),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app test test-apple coverage coverage-go coverage-apple clean release
+.PHONY: build build-linux build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app dmg install-mac test test-apple coverage coverage-go coverage-apple clean release
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) .
@@ -100,12 +104,33 @@ mac-app: build-darwin-arm64 build-darwin-amd64 icon
 	codesign --force --deep --sign - $(APP)
 	cd build && ditto -c -k --keepParent DiskIndexer.app DiskIndexer-macOS.zip
 
-release: build-linux build-darwin-arm64 build-darwin-amd64 mac-app
+# A drag-to-install disk image: the app next to an Applications shortcut.
+dmg: mac-app
+	rm -rf build/dmg $(DMG)
+	mkdir -p build/dmg
+	ditto $(APP) build/dmg/DiskIndexer.app
+	ln -s /Applications build/dmg/Applications
+	hdiutil create -volname DiskIndexer -srcfolder build/dmg -fs HFS+ -format UDZO -ov $(DMG)
+	rm -rf build/dmg
+
+# Installs the app on this Mac and links its bundled CLI onto PATH, so the
+# CLI updates whenever the app does. Quits a running copy first.
+install-mac: mac-app
+	-osascript -e 'quit app id "com.virajchitnis.diskindexer"' 2>/dev/null
+	rm -rf "$(MAC_APP_DIR)/DiskIndexer.app"
+	ditto $(APP) "$(MAC_APP_DIR)/DiskIndexer.app"
+	mkdir -p "$(MAC_BIN_DIR)"
+	ln -sf "$(MAC_APP_DIR)/DiskIndexer.app/Contents/Resources/diskindexer" "$(MAC_BIN_DIR)/diskindexer"
+	@echo "Installed $(MAC_APP_DIR)/DiskIndexer.app; CLI linked at $(MAC_BIN_DIR)/diskindexer"
+	@case ":$$PATH:" in *":$(MAC_BIN_DIR):"*) ;; *) echo "Note: $(MAC_BIN_DIR) isn't on your PATH." ;; esac
+
+release: build-linux build-darwin-arm64 build-darwin-amd64 mac-app dmg
 	$(GH) release create $(VERSION) \
 		$(BINARY_LINUX) \
 		$(BINARY_DARWIN_ARM64) \
 		$(BINARY_DARWIN_AMD64) \
 		$(APP_ZIP) \
+		$(DMG) \
 		--title "$(VERSION)" \
 		--notes-file RELEASE_NOTES.md
 

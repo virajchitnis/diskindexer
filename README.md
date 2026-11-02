@@ -50,6 +50,8 @@ The resulting binary is statically linked and requires no runtime dependencies o
 | `make test-apple` | Run the Swift tests for the macOS app, including end-to-end tests of the app logic against a real `diskindexer serve` |
 | `make coverage` | Run the Go and Swift tests with coverage, and fail if either is below 80% (`COVERAGE_MIN`) |
 | `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
+| `make dmg` | Build `build/DiskIndexer.dmg`, a drag-to-install disk image |
+| `make install-mac` | Install the app to `/Applications` and link its CLI to `~/.local/bin/diskindexer` |
 | `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns` and a 1024 px PNG |
 | `make install` | Build for Linux and copy to the server |
 | `make install-service` | `install`, then set up and restart the `diskindexer serve` systemd user service on the server |
@@ -287,16 +289,27 @@ The toolbar's connection menu switches between two modes:
 - **This Mac.** The app runs its bundled `diskindexer` in the background and uses your normal `~/.config/diskindexer` config and indexes.
 - **A server.** The app connects over SSH to `diskindexer serve` running on another machine, such as an Ubuntu box with your disks attached. You search that machine's indexes and start index runs there; Browse… shows the server's folders.
 
-### Build
+### Install
 
-Building needs only the Xcode Command Line Tools (`xcode-select --install`), not full Xcode.
+Building needs only the Xcode Command Line Tools (`xcode-select --install`), though full Xcode works too.
+
+To install on this Mac:
 
 ```bash
-make mac-app
-open build/DiskIndexer.app
+make install-mac
 ```
 
-The app is ad-hoc signed. On a Mac other than the one that built it, open it the first time with right-click → Open.
+This puts `DiskIndexer.app` in `/Applications` and links the `diskindexer` command bundled inside it to `~/.local/bin/diskindexer`, so the CLI updates whenever the app does. Override the locations with `MAC_APP_DIR` and `MAC_BIN_DIR`. A running copy of the app is quit first.
+
+To make a disk image for another Mac:
+
+```bash
+make dmg
+```
+
+`build/DiskIndexer.dmg` shows the app next to an Applications shortcut to drag it onto. CI builds one for every pull request, and `make release` attaches it to the GitHub release.
+
+The app is ad-hoc signed, not signed with an Apple Developer ID, so a copy **downloaded** from GitHub is blocked the first time. Open it via **System Settings ▸ Privacy & Security ▸ Open Anyway**. A copy you build yourself isn't affected.
 
 ### Set up a server
 

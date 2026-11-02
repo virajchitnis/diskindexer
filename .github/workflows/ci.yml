@@ -39,11 +39,14 @@ jobs:
       # Unit and AppModel integration tests (against a real `diskindexer
       # serve`), with coverage; fails below 80% for the app logic.
       - run: make coverage-apple
-      - run: make mac-app
+      # Builds the .app, its zip, and the drag-to-install DMG.
+      - run: make dmg
       - uses: actions/upload-artifact@v4
         with:
           name: DiskIndexer-macOS
-          path: build/DiskIndexer-macOS.zip
+          path: |
+            build/DiskIndexer-macOS.zip
+            build/DiskIndexer.dmg
           if-no-files-found: error
 
   ui-tests:

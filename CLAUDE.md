@@ -19,6 +19,8 @@ make build-darwin-amd64  # cross-compile for macOS Intel
 make install             # build-linux + scp (via rename) to enterprise.virajchitnis.com
 make install-service     # install + systemd user service running `diskindexer serve`
 make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
+make dmg                 # build/DiskIndexer.dmg (app + Applications link); attached by `make release`
+make install-mac         # app → /Applications, CLI symlink → ~/.local/bin/diskindexer
 make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
 make test-apple          # Swift tests incl. AppModel tests against a real `serve` (builds the binary first)
 make coverage            # Go + Swift coverage gates (fail below COVERAGE_MIN=80)
