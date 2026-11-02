@@ -210,7 +210,9 @@ struct IndexSheet: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 520, minHeight: 460)
+        // Capped so the buttons stay inside the window (min height 560);
+        // the form scrolls instead.
+        .frame(minWidth: 520, minHeight: 420, idealHeight: 500, maxHeight: 500)
         .sheet(item: $browsing) { target in
             RemoteFolderPicker(model: model, startPath: path(for: target)) { picked in
                 if let picked { set(picked, for: target) }
@@ -228,7 +230,7 @@ struct IndexSheet: View {
             if !defaults.isEmpty {
                 Toggle(isOn: $draft.useDefaultExcludes) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Skip the server\u{2019}s default excludes")
+                        Text("Use the server\u{2019}s default excludes")
                         Text(defaults.joined(separator: ", "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
