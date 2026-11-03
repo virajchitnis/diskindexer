@@ -647,8 +647,17 @@ public final class AppModel {
             let known = Set(server.map(\.id))
             let lost = jobs.filter { !known.contains($0.id) && ($0.state == .running || $0.state == .interrupted) }
                 .map { Self.interrupted($0, Self.serverRestartedMessage) }
+            // A job seen running before and finished now changed the index,
+            // even if its own progress stream hasn't said so yet.
+            let wasRunning = Set(jobs.filter { $0.state == .running }.map(\.id))
+            let finished = server.contains { wasRunning.contains($0.id) && $0.state != .running }
             jobs = (server + lost).sorted { $0.startedAt > $1.startedAt }
             for job in jobs where job.state == .running { watch(job.id) }
+            if finished {
+                await refreshMetadata()
+                await refreshSchedules()
+                scheduleSearch(debounce: false)
+            }
         } catch {
             actionError = error.localizedDescription
         }

@@ -514,7 +514,9 @@ struct AppModelIntegrationTests {
         #expect(job.schedule == s.scheduleID)
         #expect(await eventually { model.jobs.first?.state == .done })
         #expect(await eventually { model.schedules.first?.lastStatus == "done" })
-        #expect(model.schedules.first?.lastMessage == "1 added, 0 updated, 0 removed")
+        // Copies have new modification times, so "updated" varies.
+        let message = model.schedules.first?.lastMessage ?? ""
+        #expect(message.hasPrefix("1 added, ") && message.hasSuffix(", 0 removed"), "\(message)")
         #expect(await eventually { model.results.contains { $0.path == "Disk1/Music/y.flac" } })
 
         await model.setScheduleEnabled(model.schedules[0], false)
