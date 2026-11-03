@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import DiskIndexerKit
 
@@ -220,6 +221,81 @@ final class FixedTransport: Transport {
 
     func connect() async throws -> Endpoint { endpoint }
     func disconnect() {}
+}
+
+/// A slow link: forwards TCP to a server, holding every chunk the client
+/// sends for `delay` first. Answers come straight back, so each request
+/// costs about `delay`, like a round trip on a slow network.
+final class DelayProxy: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "DelayProxy")
+    private(set) var port: UInt16 = 0
+
+    init(to target: UInt16, delay: TimeInterval) async throws {
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: params)
+        let queue = self.queue
+        listener.newConnectionHandler = { client in
+            let server = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: target)!, using: .tcp)
+            Self.pipe(from: client, to: server, delay: delay, queue: queue)
+            Self.pipe(from: server, to: client, delay: 0, queue: queue)
+            client.start(queue: queue)
+            server.start(queue: queue)
+        }
+        let ready = AsyncStream<UInt16> { cont in
+            listener.stateUpdateHandler = { [listener] state in
+                if case .ready = state { cont.yield(listener.port?.rawValue ?? 0); cont.finish() }
+            }
+        }
+        listener.start(queue: queue)
+        for await p in ready { port = p }
+    }
+
+    private static func pipe(from: NWConnection, to: NWConnection, delay: TimeInterval, queue: DispatchQueue) {
+        from.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, done, error in
+            // Same delay on one serial queue, so chunks stay in order.
+            queue.asyncAfter(deadline: .now() + delay) {
+                if let data, !data.isEmpty { to.send(content: data, completion: .idempotent) }
+                if done || error != nil {
+                    to.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
+                }
+            }
+            if !done && error == nil { pipe(from: from, to: to, delay: delay, queue: queue) }
+        }
+    }
+
+    func stop() { listener.cancel() }
+}
+
+/// A ServeTransport reached through a DelayProxy.
+final class SlowTransport: Transport {
+    let displayName = "Slow server"
+    let isLocal = false
+    var onDisconnect: (@Sendable (String) -> Void)? {
+        get { inner.onDisconnect }
+        set { inner.onDisconnect = newValue }
+    }
+    let inner: ServeTransport
+    let delay: TimeInterval
+    private var proxy: DelayProxy?
+
+    init(_ inner: ServeTransport, delay: TimeInterval) {
+        self.inner = inner
+        self.delay = delay
+    }
+
+    func connect() async throws -> Endpoint {
+        let ep = try await inner.connect()
+        let proxy = try await DelayProxy(to: UInt16(ep.baseURL.port!), delay: delay)
+        self.proxy = proxy
+        return Endpoint(baseURL: URL(string: "http://127.0.0.1:\(proxy.port)/")!, token: ep.token)
+    }
+
+    func disconnect() {
+        proxy?.stop()
+        inner.disconnect()
+    }
 }
 
 private func makeDisk(_ files: [String: String]) throws -> String {
@@ -535,6 +611,112 @@ struct AppModelIntegrationTests {
         model.query = "stignore"
         try await Task.sleep(nanoseconds: 400_000_000)
         #expect(model.results.isEmpty, "the excluded file isn't indexed")
+    }
+
+    /// On a slow link, everything after the first request loads in one
+    /// round trip, not one per request.
+    @Test func slowLinkLoadsInParallel() async throws {
+        let delay = 0.4
+        let db = scratchDB()
+        // Index first, without the delay.
+        let seed = AppModel()
+        let seedServer = ServeTransport(dbPath: db)
+        seed.connect(seedServer)
+        #expect(await eventually { seed.status == .connected })
+        try await seed.startIndex(IndexRequest(disk: "Disk1", mountPath: try makeDisk(sampleDisk)))
+        #expect(await eventually { seed.jobs.first?.state == .done })
+        seed.disconnect()
+
+        let server = ServeTransport(dbPath: db)
+        server.stdinWatch = false // so it serves schedules too
+        let model = AppModel()
+        model.connect(SlowTransport(server, delay: delay))
+        defer { model.disconnect() }
+        #expect(await eventually(timeout: 20) { !model.connectTimings.isEmpty }, "status: \(model.status)")
+        let info = try #require(model.connectTimings["info"])
+        let load = try #require(model.connectTimings["load"])
+        #expect(info >= delay)
+        // Disks, collections, jobs and schedules together: about one delay.
+        // One after another they would take three or more.
+        #expect(load < delay * 2.2, "load took \(load)s")
+        #expect(model.diskNodes.count == 1 && model.schedulesAvailable)
+        #expect(await eventually { model.results.count == 7 })
+    }
+
+    /// The last sidebar and results are shown at once on the next launch,
+    /// and can be searched before (or without) a connection.
+    @Test func snapshotShowsLastResultsAndFiltersOffline() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("di-snap-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (first, _) = try await connectedModel()
+        first.snapshotDirectory = dir
+        // Reconnect with a cache key so this connection's state is saved.
+        let db = (first.transport as? ServeTransport)?.dbPath ?? ""
+        first.connect(ServeTransport(dbPath: db), cacheKey: "srv")
+        #expect(await eventually { first.status == .connected && first.results.count == 7 })
+        #expect(await eventually { FileManager.default.fileExists(atPath: dir.appendingPathComponent("srv.json").path) })
+        first.disconnect()
+
+        let unreachable = ConnectionFailure("offline", isTransient: true, reason: .unreachable)
+        let model = AppModel()
+        model.snapshotDirectory = dir
+        model.connect(FlakyTransport(ServeTransport(dbPath: db), failures: 100, error: unreachable), cacheKey: "srv")
+        defer { model.disconnect() }
+        #expect(model.showingSnapshot != nil)
+        #expect(model.diskNodes.map(\.label) == ["Disk1"])
+        #expect(model.results.count == 7)
+
+        model.query = "mkv"
+        #expect(model.provisional)
+        #expect(model.results.map(\.name).sorted() == ["a.mkv", "a.mkv", "b.mkv"])
+        model.sidebarSelection = .collection(disk: "Disk1", collection: "Movies")
+        #expect(model.results.map(\.name).sorted() == ["a.mkv", "b.mkv"])
+        // Shorter still narrows the saved (unfiltered) results: the folder
+        // itself matches now.
+        model.query = "m"
+        #expect(model.results.map(\.name).sorted() == ["Movies", "a.mkv", "b.mkv"])
+        #expect(await eventually { if case .waiting = model.status { return true } else { return false } })
+    }
+
+    /// Typing more narrows the results at once; the server's answer follows.
+    @Test func typingNarrowsLocallyFirst() async throws {
+        let (model, transport) = try await connectedModel()
+        defer { model.disconnect() }
+        model.query = "fla"
+        #expect(model.provisional)
+        #expect(model.results.map(\.name) == ["x.flac"])
+        #expect(await eventually { !model.provisional })
+        #expect(model.results.map(\.name) == ["x.flac"])
+        _ = transport
+    }
+
+    /// After a network change, a connection that no longer answers is
+    /// replaced at once, and a pending retry happens now.
+    @Test func networkChangeChecksTheConnection() async throws {
+        let server = ServeTransport(dbPath: scratchDB())
+        let endpoint = try await server.connect()
+        let model = AppModel()
+        // The model can't see this server die, like a tunnel over a network
+        // that has gone away.
+        model.connect(FixedTransport(endpoint))
+        defer { model.disconnect() }
+        #expect(await eventually { model.status == .connected })
+        await model.networkChanged()
+        #expect(model.status == .connected, "still answering")
+
+        server.crash()
+        await model.networkChanged()
+        #expect({ if case .reconnecting = model.status { return true } else { return false } }(), "status: \(model.status)")
+        model.disconnect()
+
+        let unreachable = ConnectionFailure("offline", isTransient: true, reason: .unreachable)
+        let flaky = FlakyTransport(ServeTransport(dbPath: scratchDB()), failures: 1, error: unreachable)
+        AppModel.maxRetryDelay = 30
+        defer { AppModel.maxRetryDelay = 30 }
+        model.connect(flaky)
+        #expect(await eventually { if case .waiting = model.status { return true } else { return false } })
+        await model.networkChanged()
+        #expect(await eventually(timeout: 5) { model.status == .connected }, "retried without waiting")
     }
 
     @Test func reconnectsAfterServerDies() async throws {

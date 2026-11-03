@@ -3,6 +3,7 @@ package server_test
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -425,4 +426,30 @@ func TestSchedules(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, h.do("DELETE", "/v1/schedules/x", nil, nil))
 	assert.Equal(t, http.StatusNoContent, h.do("DELETE", fmt.Sprintf("/v1/schedules/%d", sc.ID), nil, nil))
 	assert.Equal(t, http.StatusNotFound, h.do("DELETE", fmt.Sprintf("/v1/schedules/%d", sc.ID), nil, nil))
+}
+
+// JSON responses are gzipped for clients that ask; event streams never are.
+func TestGzip(t *testing.T) {
+	h := newHarness(t, "")
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a"})
+	j := h.index(root)
+
+	get := func(path string) *http.Response {
+		req, err := http.NewRequest("GET", h.srv.URL+path, nil)
+		require.NoError(t, err)
+		req.Header.Set("Accept-Encoding", "gzip")
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { resp.Body.Close() })
+		return resp
+	}
+	resp := get("/v1/disks")
+	require.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+	zr, err := gzip.NewReader(resp.Body)
+	require.NoError(t, err)
+	var disks []api.Disk
+	require.NoError(t, json.NewDecoder(zr).Decode(&disks))
+	assert.Len(t, disks, 1)
+
+	assert.Empty(t, get("/v1/jobs/"+j.ID+"/events").Header.Get("Content-Encoding"))
 }

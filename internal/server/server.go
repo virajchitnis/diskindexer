@@ -2,13 +2,16 @@
 package server
 
 import (
+	"compress/gzip"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/viraj/diskindexer/internal/api"
@@ -45,8 +48,9 @@ func New(svc *api.Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/fs/roots", h.fsRoots)
 	mux.HandleFunc("GET /v1/fs/list", h.fsList)
 
+	handler := gzipJSON(mux)
 	if token == "" {
-		return mux
+		return handler
 	}
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +58,34 @@ func New(svc *api.Service, token string) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, api.Error{Error: "unauthorized"})
 			return
 		}
-		mux.ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 	})
 }
+
+// gzipJSON compresses responses for clients that accept it. Search results
+// are mostly repeated paths and shrink several times over, which matters on
+// a slow link. Progress streams are left alone: they must reach the client
+// as each event is written.
+func gzipJSON(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events") || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		next.ServeHTTP(&gzipWriter{ResponseWriter: w, w: gz}, r)
+	})
+}
+
+type gzipWriter struct {
+	http.ResponseWriter
+	w io.Writer
+}
+
+func (g *gzipWriter) Write(b []byte) (int, error) { return g.w.Write(b) }
 
 type handlers struct {
 	svc *api.Service

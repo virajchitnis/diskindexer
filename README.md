@@ -421,14 +421,23 @@ Setup turns this on itself if `sudo` works without a password; otherwise it offe
 **Several addresses:** a server can have more than one address, tried in order, for example its home-network IP first and its Tailscale name second. The first one that answers is used, and every reconnect starts again from the top. So the app connects directly at home and over Tailscale elsewhere without you changing anything. The window subtitle shows which address is in use. Addresses that aren't last get a short timeout, so failing over is quick. (Tailscale alone often manages this too: between two machines on the same LAN, it connects them directly.)
 
 How the connection works:
-- The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server.
+- The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server. It logs in once per connection and runs everything else over that login (its own ssh control socket), since on a slow link each login costs several round trips.
 - It can't answer password prompts, so `ssh <host>` must log in from Terminal without asking for one.
 - **Host keys:** the first time you connect to an address, the app shows the server's key fingerprint and asks whether to trust it. If an address's key has changed, the app shows the old and new fingerprints:
   - When the new key is one you already trust for another address of the same server (for example its LAN IP and its hostname), it says so and offers **Replace Key and Connect**.
   - Otherwise it warns that the connection may be intercepted and asks again before replacing the key.
   - The app removes only the conflicting line from `~/.ssh/known_hosts` and keeps the previous file as `known_hosts.old`. ssh itself then adds the new key.
 - If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop and ask instead of retrying.
-- If the connection drops, for example when the Mac sleeps, the app notices within about 15 seconds and reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
+- If the connection drops, for example when the Mac sleeps, the app reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
+  - When the Mac's network changes (Wi-Fi, a hotspot, a VPN), the app checks the connection straight away. Over Tailscale it usually survives, since the server's address doesn't change. Otherwise the app reconnects at once, and a pending retry happens immediately instead of waiting.
+  - A link that goes quiet without the network changing is given up on after about 30 seconds.
+
+How the app copes with slow connections:
+- **Starts from last time.** Each connection's sidebar and default results are saved, so the next launch shows them at once, dimmed, with a "Connecting…" or "Waiting for…" banner. Typing searches those saved results until the server answers.
+- **Answers locally first.** When you type more, or pick a disk, collection or type, the app first narrows the results it already has, then replaces them with the server's answer.
+- **Fewer round trips.** After the first request, the sidebar, jobs, schedules and the search are fetched at the same time, and search results are sent gzip-compressed.
+- **Patient timeouts.** On a high-latency link (over 0.25 s per round trip), request timeouts grow with the measured latency, so slow requests aren't abandoned.
+- The app logs how long each connection step took. See them with `log show --last 1h --predicate 'subsystem == "com.virajchitnis.diskindexer"'`.
 - Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
 
 ## Testing

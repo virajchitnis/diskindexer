@@ -43,16 +43,18 @@ public final class APIClient: Sendable {
     private let session: URLSession
     private let eventsSession: URLSession
 
-    public init(endpoint: Endpoint) {
+    /// `latency` is the measured round-trip time; a slow link gets longer
+    /// timeouts, so requests aren't abandoned just because the link is slow.
+    public init(endpoint: Endpoint, latency: TimeInterval = 0) {
         self.endpoint = endpoint
         // Ordinary requests: a dead server or tunnel should surface quickly.
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForRequest = Self.requestTimeout(latency: latency)
         session = URLSession(configuration: config)
         // Progress streams stay open for the whole run and can go quiet during
         // long phases; if one idles out, AppModel re-attaches.
         let events = URLSessionConfiguration.ephemeral
-        events.timeoutIntervalForRequest = 120
+        events.timeoutIntervalForRequest = 120 + 20 * latency
         events.timeoutIntervalForResource = 7 * 24 * 3600
         eventsSession = URLSession(configuration: events)
     }
@@ -61,6 +63,19 @@ public final class APIClient: Sendable {
 
     public func info() async throws -> ServerInfo {
         try await send("GET", "v1/info")
+    }
+
+    /// info() with its own timeout, to check quickly that the server answers.
+    public func ping(timeout: TimeInterval) async throws {
+        var req = request("GET", "v1/info")
+        req.timeoutInterval = timeout
+        let (data, response) = try await session.data(for: req)
+        try check(response, data: data)
+    }
+
+    /// 15s, plus 20 round trips on a slow link.
+    static func requestTimeout(latency: TimeInterval) -> TimeInterval {
+        15 + 20 * latency
     }
 
     public func disks() async throws -> [Disk] {

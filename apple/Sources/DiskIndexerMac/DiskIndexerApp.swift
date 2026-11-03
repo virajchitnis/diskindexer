@@ -69,6 +69,8 @@ struct ContentView: View {
             }
             .onAppear {
                 model.pickLocalFolder = pickFolder
+                model.snapshotDirectory = Self.snapshotDirectory
+                model.watchNetwork()
                 if model.status == .disconnected { connect(store.selectedID) }
             }
     }
@@ -93,7 +95,15 @@ struct ContentView: View {
 
     private func connect(_ id: String) {
         store.selectedID = id
-        model.connect(store.makeTransport())
+        model.connect(store.makeTransport(), cacheKey: id)
+    }
+
+    /// Each connection's last sidebar and results, shown at launch. Not when
+    /// pointed at another index (tests, development).
+    static var snapshotDirectory: URL? {
+        guard ProcessInfo.processInfo.environment["DISKINDEXER_DB"] == nil else { return nil }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("DiskIndexer/Snapshots")
     }
 
     private func pickFolder() -> String? {

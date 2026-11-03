@@ -1,5 +1,6 @@
 import DiskIndexerKit
 import Foundation
+import os
 
 /// Reaches `diskindexer serve` on a remote host by forwarding a local loopback
 /// port to the server's Unix socket with the system ssh. Authentication,
@@ -19,9 +20,16 @@ final class SSHTunnel: Transport, ServerManaging {
     /// The address the current connection uses.
     private(set) var activeAddress: String?
 
+    /// The master ssh connection (through its diesWithParent wrapper).
     private var process: Process?
     /// Write end of the wrapper's stdin; closing it stops ssh (see diesWithParent).
     private var lifeline: Pipe?
+    private var masterErrors: OutputBuffer?
+    /// Holds the master's control socket.
+    private var controlDir: String?
+    /// An on-demand server's session, and the pipe that is its stdin.
+    private var session: Process?
+    private var sessionInput: Pipe?
     private let stopping = AtomicFlag()
 
     static let ssh = "/usr/bin/ssh"
@@ -44,66 +52,145 @@ final class SSHTunnel: Transport, ServerManaging {
 
     func connect() async throws -> Endpoint {
         stopping.set(false)
-        let (host, server) = try await firstReachable(hosts) { host, isLast in
-            try await findServer(on: host, timeout: isLast ? 10 : 4)
+        let started = Date()
+        // One SSH login per connect: a master connection the app owns, which
+        // the server lookup and the port forward then share. On a slow link
+        // each extra login costs several round trips.
+        let (host, mux) = try await firstReachable(hosts) { host, isLast in
+            try await startMaster(on: host, timeout: isLast ? 10 : 4)
         }
         activeAddress = host
-        let port = try freeLoopbackPort()
+        Log.connect.notice("ssh login to \(host, privacy: .public): \(Date().timeIntervalSince(started), format: .fixed(precision: 3))s")
+        do {
+            return try await attach(host: host, mux: mux)
+        } catch {
+            disconnect()
+            throw error
+        }
+    }
 
-        let forward = [
-            "-o", "ExitOnForwardFailure=yes",
-            // Notice a dead link (Tailscale down, Wi-Fi change, sleep) in ~15s.
-            "-o", "ServerAliveInterval=5",
-            "-o", "ServerAliveCountMax=3",
-            "-L", "127.0.0.1:\(port):\(server.socket)",
-        ]
-        let p = Process()
-        let lifeline = Pipe()
+    /// Finds the server over the master connection, starts one if needed,
+    /// and forwards a local port to its socket.
+    private func attach(host: String, mux: [String]) async throws -> Endpoint {
+        var t = Date()
+        let server = try await findServer(on: host, mux: mux)
+        Log.connect.notice("found server: \(Date().timeIntervalSince(t), format: .fixed(precision: 3))s")
         if let binary = server.onDemandBinary {
             // No running server: start one for this connection. Its stdin is
-            // the lifeline, so when the app disconnects or dies, ssh forwards
-            // EOF and `serve --stdin-watch` exits, then ssh does.
+            // a pipe the app holds, so when the app disconnects or dies, the
+            // session ends and `serve --stdin-watch` exits.
             let remote = "\(Self.shellQuote(binary)) serve --stdin-watch --listen \(Self.shellQuote("unix:" + server.socket))"
+            let p = Process()
             p.executableURL = URL(fileURLWithPath: Self.ssh)
-            p.arguments = sshOptions() + forward + [host, remote]
-        } else {
-            // Run ssh through a wrapper so the tunnel can't outlive the app.
-            let cmd = diesWithParent(Self.ssh, sshOptions() + ["-N"] + forward + [host])
-            p.executableURL = URL(fileURLWithPath: cmd.executable)
-            p.arguments = cmd.arguments
+            p.arguments = mux + [host, remote]
+            let input = Pipe()
+            p.standardInput = input
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            watchExit(of: p, stderr: nil)
+            try p.run()
+            session = p
+            sessionInput = input
         }
-        p.standardInput = lifeline
-        p.standardOutput = FileHandle.nullDevice
-        let stderr = Pipe()
-        p.standardError = stderr
-        let errBuf = OutputBuffer(stderr)
-        let name = displayName
-        p.terminationHandler = { [weak self] _ in
-            guard let self, !self.stopping.isSet else { return }
-            let detail = errBuf.text
-            self.onDisconnect?(detail.isEmpty ? "SSH connection to \(name) closed." : detail)
+
+        t = Date()
+        let port = try freeLoopbackPort()
+        let fwd = try await runCommand(Self.ssh, mux + ["-O", "forward", "-L", "127.0.0.1:\(port):\(server.socket)", host])
+        guard fwd.status == 0 else {
+            throw ConnectionFailure("Couldn\u{2019}t forward a port to diskindexer on \(host): \(fwd.stderr)", isTransient: true)
         }
-        try p.run()
-        process = p
-        self.lifeline = lifeline
 
         // Wait for the forward to answer.
         let endpoint = Endpoint(baseURL: URL(string: "http://127.0.0.1:\(port)/")!)
         let client = APIClient(endpoint: endpoint)
         let deadline = Date().addingTimeInterval(20)
         while Date() < deadline {
-            if !p.isRunning {
-                process = nil
-                throw sshFailure(errBuf.text, host: host)
+            if process?.isRunning != true {
+                throw sshFailure(masterErrors?.text ?? "", host: host)
             }
             if (try? await client.info()) != nil {
+                Log.connect.notice("forward answering: \(Date().timeIntervalSince(t), format: .fixed(precision: 3))s")
                 return endpoint
             }
-            try await Task.sleep(nanoseconds: 250_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
-        disconnect()
         // Usually the service restarting, or a socket left by a crash.
         throw ConnectionFailure("Timed out waiting for diskindexer on \(host).", isTransient: true)
+    }
+
+    /// Logs in to `host` as a master connection with its own control socket,
+    /// and returns the ssh options that run commands over it. Fails like a
+    /// normal login (network, host key, auth) if the login does.
+    private func startMaster(on host: String, timeout: Int) async throws -> [String] {
+        // Control sockets have a short path limit, so not NSTemporaryDirectory.
+        var template = Array("/tmp/diskindexer.XXXXXX".utf8CString)
+        guard let dir = mkdtemp(&template).map({ String(cString: $0) }) else {
+            throw ProcessFailure(message: "Couldn\u{2019}t create a folder for the SSH connection.")
+        }
+        let control = dir + "/c"
+        controlDir = dir
+        let master = [
+            "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(timeout)",
+            "-o", "ControlMaster=yes", "-o", "ControlPath=\(control)", "-o", "ControlPersist=no",
+            // Notice a dead link in ~30s. A change of network is noticed
+            // sooner: the app checks the connection when that happens.
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=6",
+            "-N", host,
+        ]
+        // Run ssh through a wrapper so the master (and with it every session
+        // and forward) can't outlive the app.
+        let cmd = diesWithParent(Self.ssh, master)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: cmd.executable)
+        p.arguments = cmd.arguments
+        let lifeline = Pipe()
+        p.standardInput = lifeline
+        p.standardOutput = FileHandle.nullDevice
+        let stderr = Pipe()
+        p.standardError = stderr
+        let errors = OutputBuffer(stderr)
+        let ready = AtomicFlag()
+        p.terminationHandler = { [weak self] proc in
+            // A master from an earlier connection ending late isn't news.
+            guard let self, ready.isSet, !self.stopping.isSet, self.process === proc else { return }
+            let detail = errors.text
+            self.onDisconnect?(detail.isEmpty ? "SSH connection to \(self.displayName) closed." : detail)
+        }
+        try p.run()
+        process = p
+        self.lifeline = lifeline
+        masterErrors = errors
+
+        // The control socket appears once the login has succeeded.
+        let deadline = Date().addingTimeInterval(Double(timeout) + 20)
+        while !FileManager.default.fileExists(atPath: control) {
+            if !p.isRunning {
+                p.waitUntilExit()
+                let stderrText = errors.text
+                cleanUp()
+                if SSHFailureKind.classify(stderrText) == .hostKey {
+                    throw await hostKeyFailure(host: host, stderr: stderrText)
+                }
+                throw sshFailure(stderrText, host: host)
+            }
+            if Date() > deadline {
+                disconnect()
+                throw ConnectionFailure("Timed out logging in to \(host).", isTransient: true, reason: .unreachable)
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        ready.set(true)
+        return ["-o", "ControlPath=\(control)", "-o", "ControlMaster=no", "-o", "BatchMode=yes"]
+    }
+
+    /// Reports the end of a process the connection depends on as a disconnect.
+    private func watchExit(of p: Process, stderr: OutputBuffer?) {
+        let name = displayName
+        p.terminationHandler = { [weak self] proc in
+            guard let self, !self.stopping.isSet, self.session === proc else { return }
+            let detail = stderr?.text ?? ""
+            self.onDisconnect?(detail.isEmpty ? "The diskindexer session on \(name) ended." : detail)
+        }
     }
 
     /// Turns ssh's stderr into a failure with advice that fits the cause.
@@ -160,16 +247,16 @@ final class SSHTunnel: Transport, ServerManaging {
             """
     }
 
-    /// Logs in once to find the server's socket (as an absolute path) or how
-    /// to start one, so failures come with a useful message.
-    private func findServer(on host: String, timeout: Int) async throws -> FoundServer {
+    /// Finds the server's socket (as an absolute path) or how to start one,
+    /// over the master connection, so failures come with a useful message.
+    private func findServer(on host: String, mux: [String]) async throws -> FoundServer {
         let path = socketPath?.trimmingCharacters(in: .whitespaces).nilIfEmpty ?? Self.defaultSocket
         guard !path.contains("'"), !path.contains("\"") else {
             throw ProcessFailure(message: "The socket path can't contain quotes.")
         }
         // Run through sh explicitly so it works whatever the login shell is.
         let command = "sh -c " + Self.shellQuote(Self.findServerScript(socketPath: path))
-        let r = try await runCommand(Self.ssh, sshOptions(timeout: timeout) + [host, command])
+        let r = try await runCommand(Self.ssh, mux + [host, command])
         let lines = r.stdout.split(separator: "\n").map(String.init)
         switch r.status {
         case 0 where lines.first == "socket" && lines.count >= 2:
@@ -182,8 +269,6 @@ final class SSHTunnel: Transport, ServerManaging {
                 diskindexer isn't installed on \(displayName).
                 Set it up from here, or install it there yourself (see the README).
                 """, isTransient: true, reason: .notRunning)
-        case 255 where SSHFailureKind.classify(r.stderr) == .hostKey:
-            throw await hostKeyFailure(host: host, stderr: r.stderr)
         case 255:
             throw sshFailure(r.stderr, host: host)
         default:
@@ -193,11 +278,24 @@ final class SSHTunnel: Transport, ServerManaging {
 
     func disconnect() {
         stopping.set(true)
-        // EOF on the lifeline makes the wrapper kill ssh; terminating the
-        // wrapper alone would leave ssh running.
+        cleanUp()
+    }
+
+    private func cleanUp() {
+        // EOF on the lifeline makes the wrapper kill the master ssh, which
+        // ends the session and forward too; terminating the wrapper alone
+        // would leave ssh running.
+        try? sessionInput?.fileHandleForWriting.close()
+        sessionInput = nil
+        session = nil
         try? lifeline?.fileHandleForWriting.close()
         lifeline = nil
         process = nil
+        masterErrors = nil
+        if let dir = controlDir {
+            try? FileManager.default.removeItem(atPath: dir)
+            controlDir = nil
+        }
     }
 
     // MARK: Installing and updating the server
@@ -321,6 +419,10 @@ final class SSHTunnel: Transport, ServerManaging {
         echo "version=$("$HOME/.local/bin/diskindexer" --version)"
         """
     }
+}
+
+enum Log {
+    static let connect = Logger(subsystem: "com.virajchitnis.diskindexer", category: "connect")
 }
 
 extension String {

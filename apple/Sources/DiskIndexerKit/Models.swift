@@ -80,7 +80,7 @@ public enum TypeFilter: String, Codable, CaseIterable, Sendable {
     }
 }
 
-public struct SearchRequest: Codable, Sendable {
+public struct SearchRequest: Codable, Hashable, Sendable {
     public var query: String
     public var disk: String?
     public var collection: String?

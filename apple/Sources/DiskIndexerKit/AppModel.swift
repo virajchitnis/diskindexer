@@ -1,6 +1,9 @@
 import Foundation
 import Observation
+import os
 import SwiftUI
+
+let connectLog = Logger(subsystem: "com.virajchitnis.diskindexer", category: "connect")
 
 public enum ConnectionStatus: Equatable {
     case disconnected
@@ -50,6 +53,18 @@ public final class AppModel {
     /// The most recent connection failure, so the UI can offer to install or
     /// update diskindexer when that's the problem.
     public private(set) var lastFailure: ConnectionFailure?
+    /// How long each phase of the last connect took, in seconds: "connect"
+    /// (the transport), "info" (one round trip) and "load" (sidebar, jobs
+    /// and schedules). Also logged, under the "connect" category.
+    public private(set) var connectTimings: [String: TimeInterval] = [:]
+
+    /// Where to keep each connection's last sidebar and results, so the app
+    /// shows them straight away on the next launch. nil turns this off.
+    public var snapshotDirectory: URL?
+    private var snapshotKey: String?
+    /// The sidebar and results come from a snapshot saved at this time, not
+    /// (yet) from the server.
+    public private(set) var showingSnapshot: Date?
 
     /// The server runs an older diskindexer than this app bundles: the UI
     /// offers to update it.
@@ -78,6 +93,11 @@ public final class AppModel {
     public var query = "" { didSet { if query != oldValue { scheduleSearch() } } }
     public var typeFilter: TypeFilter = .all { didSet { if typeFilter != oldValue { scheduleSearch(debounce: false) } } }
     public var sidebarSelection: SidebarItem? = .allDisks { didSet { if sidebarSelection != oldValue { scheduleSearch(debounce: false) } } }
+    /// The results are filtered locally from earlier ones while the server's
+    /// answer is on its way (or while not connected).
+    public private(set) var provisional = false
+    /// The last results the server sent, and what they were for.
+    private var baseline: (request: SearchRequest, files: [FileItem], capped: Bool)?
     public private(set) var results: [FileItem] = []
     /// Bumped whenever `results` is replaced by a different result set. The
     /// results table is rebuilt on each change instead of having SwiftUI
@@ -118,9 +138,12 @@ public final class AppModel {
 
     /// Connects through transport, replacing any current connection. If the
     /// transport later reports a disconnect, reconnects with backoff.
-    public func connect(_ transport: Transport) {
+    /// `cacheKey` names the connection's snapshot (see snapshotDirectory).
+    public func connect(_ transport: Transport, cacheKey: String? = nil) {
         disconnect()
         self.transport = transport
+        snapshotKey = cacheKey
+        loadSnapshot()
         transport.onDisconnect = { [weak self, weak transport] reason in
             Task { @MainActor in
                 guard let self, let transport, self.transport === transport else { return }
@@ -144,6 +167,10 @@ public final class AppModel {
         status = .disconnected
         diskNodes = []
         results = []
+        baseline = nil
+        provisional = false
+        showingSnapshot = nil
+        snapshot = nil
         jobs = []
         schedules = []
     }
@@ -182,9 +209,17 @@ public final class AppModel {
                 if retrying || attempted { transport.disconnect() }
                 attempted = true
                 nextAttempt = nil
+                var started = Date()
                 let endpoint = try await transport.connect()
-                let client = APIClient(endpoint: endpoint)
+                var timings = ["connect": Date().timeIntervalSince(started)]
+                started = Date()
+                var client = APIClient(endpoint: endpoint)
                 let info = try await client.info()
+                let latency = Date().timeIntervalSince(started)
+                timings["info"] = latency
+                if latency > 0.25 {
+                    client = APIClient(endpoint: endpoint, latency: latency)
+                }
                 guard info.apiVersion == supportedAPIVersion else {
                     throw ConnectionFailure("Server speaks API v\(info.apiVersion); this app needs v\(supportedAPIVersion). Update diskindexer on \(transport.displayName).",
                                             isTransient: false, reason: .incompatibleVersion)
@@ -195,10 +230,21 @@ public final class AppModel {
                 lastFailure = nil
                 serverUpdate = Self.updateAvailable(server: info.version, bundled: serverManager?.bundledVersion)
                 status = .connected
-                await refreshMetadata()
-                await refreshJobs()
-                await refreshSchedules()
                 scheduleSearch(debounce: false)
+                // All at once: on a slow link each request is a round trip.
+                started = Date()
+                async let metadata: Void = refreshMetadata()
+                async let jobs: Void = refreshJobs()
+                async let schedules: Void = refreshSchedules()
+                _ = await (metadata, jobs, schedules)
+                timings["load"] = Date().timeIntervalSince(started)
+                connectTimings = timings
+                connectLog.notice("""
+                    connected to \(transport.displayName, privacy: .public): \
+                    transport \(timings["connect"] ?? 0, format: .fixed(precision: 3))s, \
+                    round trip \(latency, format: .fixed(precision: 3))s, \
+                    load \(timings["load"] ?? 0, format: .fixed(precision: 3))s
+                    """)
                 return
             } catch {
                 guard !Task.isCancelled, self.transport === transport else { return }
@@ -217,6 +263,39 @@ public final class AppModel {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 delay = min(delay * 2, Self.maxRetryDelay)
             }
+        }
+    }
+
+    /// Call when the device's network changes (Wi-Fi to hotspot, VPN up,
+    /// waking from sleep). A pending retry happens now instead of after its
+    /// wait. A live connection is checked straight away: over Tailscale it
+    /// usually survives the change, otherwise it's replaced without waiting
+    /// for ssh's keepalive to give up.
+    public func networkChanged() async {
+        switch status {
+        case .waiting, .reconnecting:
+            retryNow()
+        case .connected:
+            guard let client else { return }
+            do {
+                try await client.ping(timeout: 4)
+            } catch {
+                guard self.client === client, status == .connected else { return }
+                connectLog.notice("connection lost after a network change")
+                handleDisconnect("The network changed and \(transport?.displayName ?? "the server") stopped answering.")
+            }
+        default:
+            break
+        }
+    }
+
+    private var networkWatcher: NetworkWatcher?
+
+    /// Calls networkChanged() whenever the device's network changes.
+    public func watchNetwork() {
+        guard networkWatcher == nil else { return }
+        networkWatcher = NetworkWatcher { [weak self] in
+            Task { @MainActor in await self?.networkChanged() }
         }
     }
 
@@ -294,6 +373,15 @@ public final class AppModel {
             async let disks = client.disks()
             async let colls = client.collections()
             let (d, c) = try await (disks, colls)
+            applyMetadata(disks: d, collections: c)
+            saveSnapshot(disks: d, collections: c)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func applyMetadata(disks d: [Disk], collections c: [Collection]) {
+        do {
             var nodes: [String: DiskNode] = [:]
             for disk in d {
                 nodes[disk.label, default: DiskNode(label: disk.label, disks: [], collections: [])].disks.append(disk)
@@ -312,22 +400,28 @@ public final class AppModel {
                !(diskNodes.first { $0.label == disk }?.collections.contains { $0.label == coll } ?? false) {
                 sidebarSelection = .allDisks
             }
-        } catch {
-            actionError = error.localizedDescription
         }
     }
 
     // MARK: Search
 
-    public func scheduleSearch(debounce: Bool = true) {
-        searchTask?.cancel()
-        guard let client else { return }
+    private var currentRequest: SearchRequest {
         var req = SearchRequest(query: query, type: typeFilter)
         switch sidebarSelection {
         case .disk(let d): req.disk = d
         case .collection(let d, let c): req.disk = d; req.collection = c
         default: break
         }
+        return req
+    }
+
+    public func scheduleSearch(debounce: Bool = true) {
+        searchTask?.cancel()
+        let req = currentRequest
+        // Show what can be worked out locally straight away, like mosh's
+        // local echo; the server's answer replaces it.
+        filterLocally(req)
+        guard let client else { return }
         searchTask = Task {
             if debounce {
                 try? await Task.sleep(nanoseconds: 150_000_000)
@@ -340,13 +434,48 @@ public final class AppModel {
                 if Task.isCancelled { return }
                 searchError = nil
                 capped = resp.capped
+                provisional = false
+                showingSnapshot = nil
+                baseline = (req, resp.results, resp.capped)
                 setResults(resp.results)
+                if req == Self.defaultRequest { saveSnapshot(results: resp.results, capped: resp.capped) }
             } catch {
                 if Task.isCancelled { return }
                 searchError = error.localizedDescription
             }
         }
     }
+
+    /// Narrows the last server results to `req` when it only narrows what
+    /// they were for (more typed, a type or a disk picked), so they are
+    /// exactly the matches among them. Otherwise leaves the results alone.
+    private func filterLocally(_ req: SearchRequest) {
+        guard let base = baseline, base.request != req, Self.narrows(req, base.request) else { return }
+        let tokens = req.query.lowercased().split(whereSeparator: \.isWhitespace)
+        let files = base.files.filter { f in
+            let path = f.path.lowercased()
+            return tokens.allSatisfy { path.contains($0) }
+                && (req.type != .files || !f.isDir) && (req.type != .dirs || f.isDir)
+                && (req.disk == nil || f.diskLabel == req.disk)
+                && (req.collection == nil || f.collLabel == req.collection)
+        }
+        provisional = true
+        capped = base.capped && files.count == base.files.count
+        setResults(files)
+    }
+
+    /// Whether every match for `req` is among the matches for `base`.
+    nonisolated static func narrows(_ req: SearchRequest, _ base: SearchRequest) -> Bool {
+        let q = req.query.lowercased().trimmingCharacters(in: .whitespaces)
+        let b = base.query.lowercased().trimmingCharacters(in: .whitespaces)
+        return (b.isEmpty || q.contains(b))
+            && (base.type == nil || base.type == .all || base.type == req.type)
+            && (base.disk == nil || base.disk == req.disk)
+            && (base.collection == nil || base.collection == req.collection)
+    }
+
+    /// What the window shows on launch, so the one worth keeping.
+    static let defaultRequest = SearchRequest(query: "", type: .all)
 
     private func setResults(_ files: [FileItem]) {
         var counts: [String: Int] = [:]
@@ -369,6 +498,56 @@ public final class AppModel {
 
     public func isDuplicate(_ f: FileItem) -> Bool {
         !(f.isDir && f.size == 0) && duplicateKeys.contains(f.duplicateKey)
+    }
+
+    // MARK: Snapshots
+
+    struct Snapshot: Codable {
+        var savedAt: Date
+        var disks: [Disk]
+        var collections: [Collection]
+        var results: [FileItem]
+        var capped: Bool
+    }
+
+    private var snapshotURL: URL? {
+        guard let dir = snapshotDirectory, let key = snapshotKey else { return nil }
+        let safe = key.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" }
+        return dir.appendingPathComponent(String(safe) + ".json")
+    }
+
+    private var snapshot: Snapshot?
+
+    /// Shows the connection's last sidebar and results until the server
+    /// answers, and lets the results be filtered meanwhile.
+    private func loadSnapshot() {
+        guard let url = snapshotURL, let data = try? Data(contentsOf: url),
+              let snap = try? APIClient.decoder.decode(Snapshot.self, from: data) else { return }
+        snapshot = snap
+        applyMetadata(disks: snap.disks, collections: snap.collections)
+        baseline = (Self.defaultRequest, snap.results, snap.capped)
+        capped = snap.capped
+        setResults(snap.results)
+        showingSnapshot = snap.savedAt
+        if currentRequest != Self.defaultRequest { filterLocally(currentRequest) }
+    }
+
+    private func saveSnapshot(disks: [Disk]? = nil, collections: [Collection]? = nil,
+                              results: [FileItem]? = nil, capped: Bool? = nil) {
+        guard let url = snapshotURL else { return }
+        var snap = snapshot ?? Snapshot(savedAt: Date(), disks: [], collections: [], results: [], capped: false)
+        snap.savedAt = Date()
+        if let disks { snap.disks = disks }
+        if let collections { snap.collections = collections }
+        if let results { snap.results = results }
+        if let capped { snap.capped = capped }
+        snapshot = snap
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try APIClient.encoder.encode(snap).write(to: url, options: .atomic)
+        } catch {
+            connectLog.error("saving snapshot: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: Management

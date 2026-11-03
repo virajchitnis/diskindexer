@@ -373,4 +373,17 @@ struct DiskIndexerKitTests {
         #expect(try scheduleRunNote(info: info(#","scheduler":true,"persistent":false"#), serverName: "e").contains("loginctl enable-linger me"))
         #expect(try scheduleRunNote(info: info(#","scheduler":true"#), serverName: "e") == "Schedules run while diskindexer is running on e.")
     }
+
+    @Test func testSlowLinkHelpers() {
+        let base = SearchRequest(query: "beach", type: .all)
+        #expect(AppModel.narrows(SearchRequest(query: "beach jpg", type: .files), base))
+        #expect(AppModel.narrows(SearchRequest(query: "Beach", disk: "D", type: .all), base))
+        #expect(!AppModel.narrows(SearchRequest(query: "bea", type: .all), base))
+        #expect(!AppModel.narrows(SearchRequest(query: "beach", type: .all), SearchRequest(query: "beach", type: .files)))
+        #expect(!AppModel.narrows(SearchRequest(query: "beach", disk: "E"), SearchRequest(query: "", disk: "D")))
+        #expect(!AppModel.narrows(SearchRequest(query: "x", collection: "C"), SearchRequest(query: "", collection: "B")))
+        #expect(APIClient.requestTimeout(latency: 0) == 15)
+        #expect(APIClient.requestTimeout(latency: 1) == 35)
+        #expect(NetworkWatcher.signature(status: "satisfied", interfaces: ["utun3", "en0"]) == "satisfied:en0,utun3")
+    }
 }

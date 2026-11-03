@@ -178,39 +178,10 @@ public struct BrowserView: View {
     private var detail: some View {
         switch model.status {
         case .connected, .reconnecting:
-            let offline = model.status != .connected
-            VStack(spacing: 0) {
-                // Stale results stay usable (copy a path) but look stale.
-                ResultsTable(model: model, dimmed: offline)
-                    // The table's scroll view otherwise draws past its frame,
-                    // under the banner below.
-                    .clipped()
-                // Below the table, not above it: the table extends under the
-                // toolbar and pins its column header over anything on top.
-                if let update = model.serverUpdate, model.status == .connected, dismissedUpdate != update.available {
-                    Divider()
-                    Banner(systemImage: "arrow.up.circle", actionTitle: "Update\u{2026}", action: { confirmInstall = true },
-                           dismiss: { dismissedUpdate = update.available }) {
-                        Text("\(serverName) runs diskindexer \(update.current); this app includes \(update.available).")
-                    }
-                }
-                if case let .reconnecting(reason) = model.status {
-                    Divider()
-                    Banner(systemImage: "wifi.exclamationmark", action: model.retryNow) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 4) {
-                                Text("Reconnecting to \(model.transport?.displayName ?? "the server")")
-                                    .fontWeight(.medium)
-                                RetryCountdown(until: model.nextAttempt)
-                            }
-                            Text("Showing results from before the connection dropped. Searches will run once it\u{2019}s back.")
-                            Text(reason).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                    }
-                }
-                Divider()
-                StatusBar(model: model)
-            }
+            resultsArea
+        case .connecting where model.showingSnapshot != nil, .waiting where model.showingSnapshot != nil:
+            // Last time's sidebar and results, until the server answers.
+            resultsArea
         case .connecting:
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -246,6 +217,72 @@ public struct BrowserView: View {
         case .disconnected:
             ContentUnavailableView("Not connected", systemImage: "externaldrive.badge.questionmark",
                                    description: Text("Choose a connection from the toolbar."))
+        }
+    }
+
+    /// While connecting with last time's results on screen.
+    private var snapshotBanner: some View {
+        let connecting = model.status == .connecting
+        let retry: (() -> Void)? = connecting ? nil : { model.retryNow() }
+        var reason: String?
+        if case .waiting(let r) = model.status { reason = r }
+        return Banner(systemImage: "clock.arrow.circlepath", action: retry) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(connecting ? "Connecting to \(serverName)\u{2026}" : "Waiting for \(serverName)")
+                        .fontWeight(.medium)
+                    if !connecting { RetryCountdown(until: model.nextAttempt) }
+                }
+                if let saved = model.showingSnapshot {
+                    Text("Showing what it had \(saved.formatted(.relative(presentation: .named))). Searching filters these results until it answers.")
+                }
+                if let reason {
+                    Text(reason).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var resultsArea: some View {
+        let offline = model.status != .connected
+        VStack(spacing: 0) {
+            // Stale results stay usable (copy a path) but look stale.
+            ResultsTable(model: model, dimmed: offline)
+                // The table's scroll view otherwise draws past its frame,
+                // under the banner below.
+                .clipped()
+            // Below the table, not above it: the table extends under the
+            // toolbar and pins its column header over anything on top.
+            if let update = model.serverUpdate, model.status == .connected, dismissedUpdate != update.available {
+                Divider()
+                Banner(systemImage: "arrow.up.circle", actionTitle: "Update\u{2026}", action: { confirmInstall = true },
+                       dismiss: { dismissedUpdate = update.available }) {
+                    Text("\(serverName) runs diskindexer \(update.current); this app includes \(update.available).")
+                }
+            }
+            switch model.status {
+            case .reconnecting(let reason):
+                Divider()
+                Banner(systemImage: "wifi.exclamationmark", action: model.retryNow) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text("Reconnecting to \(serverName)")
+                                .fontWeight(.medium)
+                            RetryCountdown(until: model.nextAttempt)
+                        }
+                        Text("Showing results from before the connection dropped. Searches will run once it\u{2019}s back.")
+                        Text(reason).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+            case .connecting, .waiting:
+                Divider()
+                snapshotBanner
+            default:
+                EmptyView()
+            }
+            Divider()
+            StatusBar(model: model)
         }
     }
 }
@@ -336,6 +373,9 @@ struct StatusBar: View {
 
     private var countText: String {
         let n = model.results.count
+        if model.provisional && model.status != .connected {
+            return n == 1 ? "1 match in saved results" : "\(n) matches in saved results"
+        }
         if model.capped { return "\(n)+ results, refine your search to see more" }
         return n == 1 ? "1 result" : "\(n) results"
     }
