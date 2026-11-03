@@ -33,6 +33,11 @@ type Info struct {
 	// connection (--stdin-watch) or its systemd user service stops at logout
 	// (no linger). Omitted when unknown.
 	Persistent *bool `json:"persistent,omitempty"`
+	// Scheduler says whether this server runs schedules. It doesn't when it
+	// only runs while a client is connected (--stdin-watch).
+	Scheduler bool `json:"scheduler"`
+	// TimeZone is the server's, e.g. "CET", which schedule times are in.
+	TimeZone string `json:"timeZone"`
 }
 
 type Disk struct {
@@ -91,6 +96,9 @@ type SearchResponse struct {
 type CollectionSpec struct {
 	Label    string `json:"label"`
 	RootPath string `json:"rootPath"`
+	// KeepRootPath indexes from RootPath this once and keeps the location
+	// saved for an existing collection, e.g. when reading from a copy.
+	KeepRootPath bool `json:"keepRootPath,omitempty"`
 }
 
 // IndexRequest starts an index run (index and reindex are the same operation).
@@ -159,6 +167,41 @@ type Job struct {
 	Progress   Progress     `json:"progress"`
 	Stats      *Stats       `json:"stats,omitempty"`
 	Error      string       `json:"error,omitempty"`
+	// Schedule is the ID of the schedule that started this run, if any.
+	Schedule int64 `json:"schedule,omitempty"`
+}
+
+// Schedule reindexes a disk, or one of its collections, every IntervalHours.
+type Schedule struct {
+	DB string `json:"db"`
+	ID int64  `json:"id"`
+	ScheduleRequest
+	// MountPoint is where the path's disk was mounted when the schedule was
+	// saved; runs are skipped while nothing is mounted there.
+	MountPoint string     `json:"mountPoint,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
+	// LastStatus is "running", "done", "failed", "cancelled", "skipped" (the
+	// folder wasn't available) or "interrupted" (the server stopped).
+	LastStatus  string `json:"lastStatus,omitempty"`
+	LastMessage string `json:"lastMessage,omitempty"`
+	LastJobID   string `json:"lastJobId,omitempty"`
+	// NextRunAt is omitted while the schedule is disabled.
+	NextRunAt *time.Time `json:"nextRunAt,omitempty"`
+}
+
+// ScheduleRequest creates or replaces a schedule's settings.
+type ScheduleRequest struct {
+	Disk string `json:"disk"`
+	// Collection limits runs to one collection; "" reindexes the whole disk.
+	Collection string `json:"collection,omitempty"`
+	// Path is the disk's mount path (required for a disk), or the folder to
+	// read a collection from ("" = its saved location).
+	Path          string `json:"path,omitempty"`
+	IntervalHours int    `json:"intervalHours"`
+	// At is "HH:MM" in the server's time zone; only for whole-day intervals.
+	At      string `json:"at,omitempty"`
+	Enabled bool   `json:"enabled"`
 }
 
 type DirEntry struct {

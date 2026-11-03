@@ -19,6 +19,9 @@ final class ServeTransport: Transport {
     /// restarting behind a tunnel that stayed up. nil means random.
     let port: Int?
     let fixedToken: String?
+    /// Exit with stdin like the app's own servers; false runs it like a
+    /// service, which runs schedules.
+    var stdinWatch = true
     private(set) var endpoint: Endpoint?
     private(set) var launches = 0
     private var process: Process?
@@ -49,7 +52,7 @@ final class ServeTransport: Transport {
         let token = fixedToken ?? UUID().uuidString
         let p = Process()
         p.executableURL = URL(fileURLWithPath: try Self.binaryPath())
-        p.arguments = ["serve", "--listen", "127.0.0.1:\(port ?? 0)", "--stdin-watch", "--db", dbPath]
+        p.arguments = ["serve", "--listen", "127.0.0.1:\(port ?? 0)", "--db", dbPath] + (stdinWatch ? ["--stdin-watch"] : [])
         var env = ProcessInfo.processInfo.environment
         env["DISKINDEXER_TOKEN"] = token
         p.environment = env
@@ -255,9 +258,10 @@ private let sampleDisk = [
 
 /// Connects a fresh model to a fresh server and indexes sampleDisk as "Disk1".
 @MainActor
-private func connectedModel() async throws -> (AppModel, ServeTransport) {
+private func connectedModel(stdinWatch: Bool = true) async throws -> (AppModel, ServeTransport) {
     let model = AppModel()
     let transport = ServeTransport(dbPath: scratchDB())
+    transport.stdinWatch = stdinWatch
     model.connect(transport)
     #expect(await eventually { model.status == .connected }, "status: \(model.status)")
     try await model.startIndex(IndexRequest(disk: "Disk1", mountPath: try makeDisk(sampleDisk)))
@@ -381,6 +385,81 @@ struct AppModelIntegrationTests {
         #expect(!model.results.contains { $0.name == "stray.txt" })
         // Everything indexed before is still there.
         #expect(model.results.count == 9)
+    }
+
+    @Test func reindexCollectionFromCopyKeepsItsLocation() async throws {
+        let (model, _) = try await connectedModel()
+        defer { model.disconnect() }
+        #expect(!model.schedulesAvailable, "a server that exits with the app runs no schedules")
+        let node = model.diskNodes[0]
+        let movies = try #require(node.collections.first { $0.label == "Movies" })
+
+        let copy = try makeDisk(["a.mkv": "aaa", "c.mkv": "cc"])
+        var draft = IndexDraft(reindexing: movies, in: node)
+        #expect(draft.collections[0].path == movies.rootPath && !draft.readsElsewhere)
+        draft.collections[0].path = copy
+        #expect(draft.readsElsewhere && draft.isValid)
+        #expect(draft.request.mountPath == "" && draft.request.collections?.first?.keepRootPath == true)
+        try await model.startIndex(draft.request)
+        #expect(await eventually { model.jobs.first?.state == .done })
+        #expect(model.jobs.first?.stats?.added == 1 && model.jobs.first?.stats?.deleted == 1)
+        #expect(await eventually { model.results.contains { $0.path == "Disk1/Movies/c.mkv" } })
+        #expect(model.diskNodes[0].collections.first { $0.label == "Movies" }?.rootPath == movies.rootPath)
+
+        // Remembered: the copy becomes its location.
+        draft.rememberLocation = true
+        #expect(draft.request.collections?.first?.keepRootPath == nil)
+        try await model.startIndex(draft.request)
+        #expect(await eventually { model.jobs.first?.state == .done })
+        #expect(await eventually { model.diskNodes[0].collections.first { $0.label == "Movies" }?.rootPath == copy })
+    }
+
+    @Test func schedulesRunSkipAndFollowTheirCollection() async throws {
+        let (model, _) = try await connectedModel(stdinWatch: false)
+        defer { model.disconnect() }
+        #expect(model.schedulesAvailable)
+        #expect(model.schedules.isEmpty)
+        let node = model.diskNodes[0]
+        let music = try #require(node.collections.first { $0.label == "Music" })
+
+        // A collection read from a copy, every 6 hours.
+        let copy = try makeDisk(["x.flac": "x", "y.flac": "y"])
+        var draft = ScheduleDraft(node: node, collection: music)
+        draft.path = copy
+        draft.unit = .hours
+        draft.every = 6
+        try await model.saveSchedule(draft.request)
+        let s = try #require(model.schedule(disk: "Disk1", collection: "Music"))
+        #expect(s.path == copy && s.intervalHours == 6 && s.nextRunAt != nil)
+        #expect(model.schedule(disk: "Disk1") == nil)
+
+        await model.runSchedule(s)
+        let job = try #require(model.jobs.first)
+        #expect(job.schedule == s.scheduleID)
+        #expect(await eventually { model.jobs.first?.state == .done })
+        #expect(await eventually { model.schedules.first?.lastStatus == "done" })
+        #expect(model.schedules.first?.lastMessage == "1 added, 0 updated, 0 removed")
+        #expect(await eventually { model.results.contains { $0.path == "Disk1/Music/y.flac" } })
+
+        await model.setScheduleEnabled(model.schedules[0], false)
+        #expect(model.schedules.first?.nextRunAt == nil)
+
+        // The copy goes away: the run is skipped and nothing is removed.
+        try FileManager.default.removeItem(atPath: copy)
+        await model.runSchedule(model.schedules[0])
+        #expect(model.schedules.first?.lastStatus == "skipped")
+        #expect(model.schedules.first?.lastRunNeedsAttention == true)
+        #expect(model.results.contains { $0.path == "Disk1/Music/y.flac" })
+
+        // It follows a rename, and a disk schedule can't be saved without its folder.
+        await model.renameCollection(music, to: "Songs")
+        #expect(model.schedules.first?.collection == "Songs")
+        var diskDraft = ScheduleDraft(node: model.diskNodes[0])
+        diskDraft.path = "/nonexistent/disk"
+        await #expect(throws: APIError.self) { try await model.saveSchedule(diskDraft.request) }
+
+        await model.deleteSchedule(model.schedules[0])
+        #expect(model.schedules.isEmpty)
     }
 
     @Test func moveCollectionBetweenDisksAndBack() async throws {

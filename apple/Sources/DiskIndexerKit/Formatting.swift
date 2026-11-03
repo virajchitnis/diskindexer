@@ -99,3 +99,45 @@ public extension Job {
         return (request.collections ?? []).map(\.rootPath).joined(separator: ", ")
     }
 }
+
+public extension Schedule {
+    /// "Every day at 03:00 CET", "Every 6 hours", "Every 2 weeks".
+    func intervalDescription(timeZone: String? = nil) -> String {
+        var text = Format.interval(hours: intervalHours)
+        if let at, !at.isEmpty {
+            text += " at \(at)"
+            if let timeZone, !timeZone.isEmpty { text += " \(timeZone)" }
+        }
+        return text
+    }
+
+    /// What the target is: "Disk" or "Disk / Collection".
+    var targetTitle: String { isCollection ? "\(disk) / \(collection ?? "")" : disk }
+
+    var lastStatusTitle: String? {
+        switch lastStatus {
+        case "running": "Running"
+        case "done": "Done"
+        case "failed": "Failed"
+        case "cancelled": "Cancelled"
+        case "skipped": "Skipped"
+        case "interrupted": "Interrupted"
+        case .none, "": nil
+        case let other?: other.capitalized
+        }
+    }
+
+    /// Whether the last run needs a look: it failed, was skipped or stopped.
+    var lastRunNeedsAttention: Bool {
+        ["failed", "skipped", "interrupted"].contains(lastStatus ?? "")
+    }
+}
+
+public extension Format {
+    /// "Every hour", "Every 6 hours", "Every day", "Every 2 weeks".
+    static func interval(hours: Int) -> String {
+        let (n, unit): (Int, String) = hours % 168 == 0 ? (hours / 168, "week")
+            : hours % 24 == 0 ? (hours / 24, "day") : (hours, "hour")
+        return n == 1 ? "Every \(unit)" : "Every \(n) \(unit)s"
+    }
+}

@@ -97,3 +97,23 @@ public func firstReachable<T>(
     }
     throw ConnectionFailure(failures.joined(separator: "\n"), isTransient: true, reason: .unreachable)
 }
+
+/// When the server's schedules run, for the Schedules view and editor.
+public func scheduleRunNote(info: ServerInfo?, serverName: String) -> String {
+    guard let info else { return "" }
+    if info.scheduler != true {
+        return "\(serverName) only runs diskindexer while this app is connected, so schedules don\u{2019}t run there."
+    }
+    switch info.persistent {
+    case true:
+        return "Schedules run on \(serverName) around the clock, whether or not this app is connected."
+    case false:
+        var note = "\(serverName) stops diskindexer when you log out, so schedules only run while you\u{2019}re logged in there or this app is connected."
+        if info.os == "linux" {
+            note += " To run them around the clock, run `sudo loginctl enable-linger \(info.user ?? "$USER")` on \(serverName) once."
+        }
+        return note
+    default:
+        return "Schedules run while diskindexer is running on \(serverName)."
+    }
+}

@@ -391,3 +391,38 @@ func TestExcludesDefaultsAndPerDisk(t *testing.T) {
 	j = h.waitJob(j.ID)
 	assert.Equal(t, []string{"*.tmp"}, j.Stats.Excludes)
 }
+
+func TestSchedules(t *testing.T) {
+	h := newHarness(t, "")
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a"})
+	require.Equal(t, api.JobDone, h.index(root).State)
+
+	var sc api.Schedule
+	req := map[string]any{"disk": "Disk1", "path": root, "intervalHours": 24, "at": "03:00", "enabled": true}
+	require.Equal(t, http.StatusCreated, h.do("POST", "/v1/schedules", req, &sc))
+	assert.NotNil(t, sc.NextRunAt)
+	assert.Equal(t, http.StatusConflict, h.do("POST", "/v1/schedules", req, nil))
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/schedules", map[string]any{"disk": "Disk1", "intervalHours": 24}, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("POST", "/v1/schedules", map[string]any{"disk": "Nope", "path": root, "intervalHours": 24}, nil))
+
+	req["enabled"] = false
+	sc = api.Schedule{ID: sc.ID}
+	require.Equal(t, http.StatusOK, h.do("PUT", fmt.Sprintf("/v1/schedules/%d", sc.ID), req, &sc))
+	assert.Nil(t, sc.NextRunAt)
+
+	var list []api.Schedule
+	require.Equal(t, http.StatusOK, h.do("GET", "/v1/schedules", nil, &list))
+	require.Len(t, list, 1)
+
+	require.Equal(t, http.StatusOK, h.do("POST", fmt.Sprintf("/v1/schedules/%d/run", sc.ID), nil, &sc))
+	require.Equal(t, "running", sc.LastStatus)
+	j := h.waitJob(sc.LastJobID)
+	assert.Equal(t, sc.ID, j.Schedule)
+
+	assert.Equal(t, http.StatusBadRequest, h.do("POST", "/v1/schedules/x/run", nil, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("POST", "/v1/schedules/99/run", nil, nil))
+	assert.Equal(t, http.StatusBadRequest, h.do("PUT", "/v1/schedules/x", req, nil))
+	assert.Equal(t, http.StatusBadRequest, h.do("DELETE", "/v1/schedules/x", nil, nil))
+	assert.Equal(t, http.StatusNoContent, h.do("DELETE", fmt.Sprintf("/v1/schedules/%d", sc.ID), nil, nil))
+	assert.Equal(t, http.StatusNotFound, h.do("DELETE", fmt.Sprintf("/v1/schedules/%d", sc.ID), nil, nil))
+}

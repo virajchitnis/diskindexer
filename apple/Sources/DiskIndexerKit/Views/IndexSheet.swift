@@ -8,6 +8,8 @@ struct IndexDraft: Identifiable {
         /// Add collections stored anywhere on the server to an existing disk,
         /// without its mount path (the disk itself needn't be plugged in).
         case addCollection
+        /// Reindex one collection, from its saved location or another folder.
+        case reindexCollection
     }
 
     let id = UUID()
@@ -23,6 +25,10 @@ struct IndexDraft: Identifiable {
     /// Apply the server's default excludes (shown read-only in the sheet).
     var useDefaultExcludes = true
     var force = false
+    /// For reindexCollection: where the collection was last indexed from,
+    /// and whether reading from another folder should become its location.
+    var savedLocation = ""
+    var rememberLocation = false
 
     var isReindex: Bool { mode == .reindex }
 
@@ -50,6 +56,20 @@ struct IndexDraft: Identifiable {
         collections = [EditableCollection(label: "", path: "")]
     }
 
+    init(reindexing coll: Collection, in node: DiskNode) {
+        disk = node.label
+        excludes = Self.remembered(node)
+        mode = .reindexCollection
+        autoCollections = false
+        savedLocation = coll.rootPath
+        collections = [EditableCollection(label: coll.label, path: coll.rootPath)]
+    }
+
+    /// Reading a collection from somewhere other than its saved location.
+    var readsElsewhere: Bool {
+        mode == .reindexCollection && !(collections.first?.path ?? "").isEmpty && collections.first?.path != savedLocation
+    }
+
     private static func remembered(_ node: DiskNode) -> String {
         (node.disks.first?.excludes ?? []).joined(separator: ", ")
     }
@@ -63,18 +83,20 @@ struct IndexDraft: Identifiable {
         case .newDisk: "Index a Disk"
         case .reindex: "Reindex \u{201C}\(disk)\u{201D}"
         case .addCollection: "Add Collection to \u{201C}\(disk)\u{201D}"
+        case .reindexCollection: "Reindex \u{201C}\(collections.first?.label ?? "")\u{201D} on \u{201C}\(disk)\u{201D}"
         }
     }
 
     var request: IndexRequest {
         let colls = autoCollections ? [] : collections
             .filter { !$0.label.isEmpty && !$0.path.isEmpty }
-            .map { CollectionSpec(label: $0.label, rootPath: $0.path) }
+            .map { CollectionSpec(label: $0.label, rootPath: $0.path,
+                                  keepRootPath: readsElsewhere && !rememberLocation ? true : nil) }
         return IndexRequest(
             disk: disk.trimmingCharacters(in: .whitespaces),
             // Listed collections don't need the disk's root; leaving it out
             // keeps the disk's root files and other collections untouched.
-            mountPath: mode == .addCollection ? "" : mountPath,
+            mountPath: mode == .addCollection || mode == .reindexCollection ? "" : mountPath,
             description: description.isEmpty ? nil : description,
             collections: colls.isEmpty ? nil : colls,
             // Always sent, so clearing the field clears the disk's saved
@@ -136,7 +158,17 @@ struct IndexSheet: View {
                     TextField("Disk label", text: $draft.disk, prompt: Text("e.g. Archive 4TB"))
                         .disabled(draft.mode != .newDisk)
                         .accessibilityIdentifier("index.diskLabel")
-                    if draft.mode != .addCollection {
+                    if draft.mode == .reindexCollection, let c = draft.collections.first {
+                        HStack {
+                            TextField("Read from", text: $draft.collections[0].path, prompt: Text(draft.savedLocation))
+                                .accessibilityIdentifier("index.readFrom")
+                            Button("Browse\u{2026}") { browse(.collection(c.id)) }
+                        }
+                        if draft.readsElsewhere {
+                            Toggle("Make this the collection\u{2019}s saved location", isOn: $draft.rememberLocation)
+                            Button("Use Saved Location") { draft.collections[0].path = draft.savedLocation }
+                        }
+                    } else if draft.mode != .addCollection {
                         TextField("Description", text: $draft.description, prompt: Text("Optional"))
                         HStack {
                             TextField("Mount path", text: $draft.mountPath,
@@ -150,6 +182,7 @@ struct IndexSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if draft.mode != .reindexCollection {
                 Section {
                     if draft.mode != .addCollection {
                         Toggle("Use top-level folders as collections", isOn: $draft.autoCollections)
@@ -181,10 +214,11 @@ struct IndexSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                }
 
                 excludesSection
 
-                if draft.mode != .addCollection {
+                if draft.mode != .addCollection && draft.mode != .reindexCollection {
                     Section {
                         Toggle("Rebuild from scratch (wipe this disk's index first)", isOn: $draft.force)
                     }
@@ -253,13 +287,21 @@ struct IndexSheet: View {
         case .newDisk: "Start Indexing"
         case .reindex: "Reindex"
         case .addCollection: "Add and Index"
+        case .reindexCollection: "Reindex"
         }
     }
 
     private var headerFooter: String {
         let server = model.transport?.displayName ?? "the server"
         var text: String
-        if draft.mode == .addCollection {
+        if draft.mode == .reindexCollection {
+            text = "Only this collection is read; the disk\u{2019}s other collections and root-level files are left as they are."
+            if draft.readsElsewhere {
+                text += draft.rememberLocation
+                    ? " From now on it\u{2019}s read from this folder."
+                    : " The index will match this folder, and later reindexes read from \(draft.savedLocation) again."
+            }
+        } else if draft.mode == .addCollection {
             text = "The disk doesn't need to be plugged in. Its other collections and root-level files are left as they are."
         } else if !draft.autoCollections && draft.mountPath.isEmpty {
             text = "Without a mount path, only the listed collections are indexed and the disk's other collections and root-level files are left as they are."

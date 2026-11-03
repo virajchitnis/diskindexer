@@ -16,6 +16,10 @@ import (
 type CollectionSpec struct {
 	Label    string
 	RootPath string // absolute path on disk
+	// KeepRootPath walks RootPath but leaves the location stored for an
+	// existing collection as it was, e.g. to reindex a collection from a copy
+	// while its disk is unplugged. A new collection still stores RootPath.
+	KeepRootPath bool
 }
 
 // Options configures an index run.
@@ -341,6 +345,18 @@ func resolveCollections(database *db.DB, diskID int64, opts Options) ([]*db.Coll
 
 	var colls []*db.Collection
 	for _, spec := range specs {
+		if spec.KeepRootPath {
+			existing, err := database.GetCollectionByLabel(diskID, spec.Label)
+			if err != nil {
+				return nil, fmt.Errorf("collection %q: %w", spec.Label, err)
+			}
+			if existing != nil {
+				// Walked from here this time only; not saved.
+				existing.RootPath = spec.RootPath
+				colls = append(colls, existing)
+				continue
+			}
+		}
 		coll, err := database.UpsertCollection(diskID, spec.Label, spec.RootPath)
 		if err != nil {
 			return nil, fmt.Errorf("upsert collection %q: %w", spec.Label, err)

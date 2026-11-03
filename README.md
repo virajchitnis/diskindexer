@@ -14,6 +14,7 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Excludes** — skip files and folders by name or glob at any depth. Set defaults once in the config; each disk also remembers its own excludes
 - **Duplicate highlighting** — files and directories sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
+- **Scheduled reindexing** — `diskindexer serve` reindexes disks or single collections on a schedule, and skips runs while a disk is unplugged instead of emptying its index
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
 - **Static binary** — no runtime dependencies; single binary for Linux and macOS
 - **macOS app** — a native SwiftUI app that indexes and searches on your Mac, or acts as the GUI for diskindexer running on a server (over SSH)
@@ -177,6 +178,51 @@ Alias for `index`. Useful in scripts and cron jobs to make the intent explicit.
 diskindexer reindex /Volumes/Seagate --disk "Seagate 4TB"
 ```
 
+### `reindex-collection`
+
+Reindex one collection without walking the rest of its disk. The disk's other collections and its root-level files are left untouched.
+
+```bash
+# From the folder it was last indexed from
+diskindexer reindex-collection --collection "Photos" --disk "Seagate 4TB"
+
+# From a copy, e.g. on a server while the disk itself is unplugged
+diskindexer reindex-collection --collection "Photos" --disk "Seagate 4TB" --from /srv/copies/Photos
+```
+
+| Flag | Description |
+|---|---|
+| `--collection` | Collection label (required) |
+| `--disk` | Disk label, when several disks have a collection with that name |
+| `--from` | Folder to read the collection from instead of its saved location. The index then matches that folder |
+| `--remember-location` | Save `--from` as the collection's location. Without it the collection keeps its saved location, so later reindexes read the real disk again |
+| `--exclude`, `--no-default-excludes` | As for `index` |
+
+### `schedule`
+
+Reindex a disk, or one collection, periodically. Schedules are saved in the index and run by `diskindexer serve`, so they run only while the server does:
+- with the systemd service and linger, around the clock;
+- without linger, only while you're logged in on the server or the app is connected.
+
+A server the app starts just for its connection doesn't run schedules. That includes the app's own **This Mac** server and servers without systemd.
+
+```bash
+# The whole disk, every night at 03:00 (the server's time zone)
+diskindexer schedule add --disk "Seagate 4TB" --path /mnt/seagate --every 1d --at 03:00
+
+# One collection, read from a copy, every 6 hours
+diskindexer schedule add --disk "Seagate 4TB" --collection "Photos" --path /srv/copies/Photos --every 6h
+
+diskindexer schedule list
+diskindexer schedule remove 2
+```
+
+- `--every` takes hours, days or weeks: `6h`, `1d`, `2w`. `--at HH:MM` sets a time of day, for whole-day intervals only. `--disabled` adds the schedule switched off.
+- For a disk, `--path` is its mount path (required). For a collection it's optional and defaults to the collection's saved location. A copy is read like `reindex-collection --from`: the collection keeps its saved location.
+- **A run is skipped, and nothing is removed from the index, when its folder isn't there, is empty, or its disk isn't mounted.** An unplugged disk usually leaves an empty folder at its mount point, and indexing that would remove every file. To tell, the folder must be available when the schedule is added, so the server can note which filesystem it's on.
+- A run that was due while the server was down runs once when it starts. When another index run is using the same index file, the schedule waits for it to finish.
+- Each disk or collection has at most one schedule. Renaming or moving a collection takes its schedule along; deleting a disk or collection deletes its schedules.
+
 ### `search`
 
 Search across all indexed disks.
@@ -302,6 +348,8 @@ It also manages indexes from the GUI:
 - index and reindex disks with live progress through each step (loading, indexing, removing deleted files, folder sizes), Cancel, and a list of anything that couldn't be read;
 - move a collection to another disk by dragging it onto the disk in the sidebar, or with **Move to** in its right-click menu. A move asks for confirmation and can be undone with ⌘Z;
 - add a collection to an existing disk without the disk plugged in (right-click the disk → **Add Collection…**), e.g. from a copy of the folder on the server;
+- reindex a single collection (right-click it → **Reindex…**), from its saved location or another folder such as a copy. **Make this the collection's saved location** is off by default, so the real disk stays its location;
+- schedule reindexing of a disk or collection (right-click it → **Schedule Reindexing…**). The toolbar's **Schedules** button lists schedules with their last result and next run. From there you can turn a schedule on or off, run it now, edit it or delete it. Scheduled runs appear under Jobs, marked "Scheduled". This button only appears on servers that run schedules (see [`schedule`](#schedule));
 - rename and delete collections;
 - delete disks.
 
@@ -348,7 +396,7 @@ To let runs finish on their own, enable lingering on the server once:
 sudo loginctl enable-linger $USER
 ```
 
-Setup turns this on itself if `sudo` works without a password; otherwise it offers the command. When a server doesn't keep running after the app disconnects, the Index sheet says so before you start a run.
+Setup turns this on itself if `sudo` works without a password; otherwise it offers the command. When a server doesn't keep running after the app disconnects, the Index sheet says so before you start a run. Linger also lets schedules run around the clock.
 
 **Updating:** when the server runs an older diskindexer than the app includes, a banner offers **Update…**. It asks first, warns if index runs are in progress (restarting stops them), and then replaces the binary and restarts the service. Your indexes and config aren't touched. The app never downgrades a newer server.
 

@@ -692,3 +692,28 @@ func TestOpen_MergesDuplicateCollections(t *testing.T) {
 	require.NoError(t, err)
 	d2.Close()
 }
+
+// A collection's schedule moves with it to another disk.
+func TestMoveCollection_MovesItsSchedule(t *testing.T) {
+	d := openTestDB(t)
+	a, err := d.UpsertDisk("A", "")
+	require.NoError(t, err)
+	_, err = d.UpsertDisk("B", "")
+	require.NoError(t, err)
+	b, err := d.GetDiskByLabel("B")
+	require.NoError(t, err)
+	c, err := d.UpsertCollection(a.ID, "Photos", "/a/Photos")
+	require.NoError(t, err)
+	_, err = d.SaveSchedule(&db.Schedule{Disk: "A", Collection: "Photos", IntervalHours: 24, Enabled: true})
+	require.NoError(t, err)
+
+	_, err = d.MoveCollection(c.ID, b.ID)
+	require.NoError(t, err)
+	list, err := d.ListSchedules()
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "B", list[0].Disk)
+	got, err := d.GetSchedule(999)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}

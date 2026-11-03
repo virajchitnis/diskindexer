@@ -290,4 +290,87 @@ struct DiskIndexerKitTests {
         #expect(HostKeyProblem.keyTypeName("sk-ssh-ed25519@openssh.com") == "ED25519")
         #expect(HostKeyProblem.keyTypeName("other") == "OTHER")
     }
+
+    @Test func testSchedules() throws {
+        let json = #"""
+        {"db":"/x/t.diskindex","id":3,"disk":"Seagate","collection":"Photos","path":"/srv/copy","intervalHours":168,"at":"03:00","enabled":true,"createdAt":"2026-11-01T10:00:00Z","lastRunAt":"2026-11-02T03:00:00Z","lastStatus":"skipped","lastMessage":"Nothing is mounted at /mnt/seagate.","nextRunAt":"2026-11-09T03:00:00Z"}
+        """#
+        let s = try APIClient.decoder.decode(Schedule.self, from: Data(json.utf8))
+        #expect(s.id == "/x/t.diskindex#3")
+        #expect(s.isCollection)
+        #expect(s.targetTitle == "Seagate / Photos")
+        #expect(s.intervalDescription(timeZone: "CET") == "Every week at 03:00 CET")
+        #expect(s.lastStatusTitle == "Skipped")
+        #expect(s.lastRunNeedsAttention)
+
+        #expect(Format.interval(hours: 1) == "Every hour")
+        #expect(Format.interval(hours: 6) == "Every 6 hours")
+        #expect(Format.interval(hours: 24) == "Every day")
+        #expect(Format.interval(hours: 48) == "Every 2 days")
+        #expect(Format.interval(hours: 336) == "Every 2 weeks")
+
+        var t = s
+        for (status, title) in [("running", "Running"), ("done", "Done"), ("failed", "Failed"),
+                                ("cancelled", "Cancelled"), ("interrupted", "Interrupted"), ("odd", "Odd")] {
+            t.lastStatus = status
+            #expect(t.lastStatusTitle == title)
+        }
+        t.lastStatus = nil
+        #expect(t.lastStatusTitle == nil)
+        #expect(!t.lastRunNeedsAttention)
+        t.collection = nil
+        t.at = nil
+        #expect(t.targetTitle == "Seagate")
+        #expect(t.intervalDescription() == "Every week")
+
+        // Editing keeps the interval's unit and time.
+        var d = ScheduleDraft(editing: s, savedLocation: "/mnt/seagate/Photos")
+        #expect(d.unit == .weeks && d.every == 1)
+        #expect(d.at == "03:00")
+        #expect(d.request.path == "/srv/copy")
+        #expect(d.title == "Reindex \u{201C}Photos\u{201D} on \u{201C}Seagate\u{201D}")
+        // Reading from the saved location sends no path.
+        d.path = "/mnt/seagate/Photos"
+        #expect(d.request.path == nil)
+        d.unit = .hours
+        d.every = 6
+        #expect(!d.timeApplies && d.at == nil)
+        #expect(d.request.intervalHours == 6)
+        #expect(d.isValid)
+        #expect(ScheduleDraft.Unit.weeks.title(2) == "weeks")
+        #expect(ScheduleDraft.Unit.hours.title(1) == "hour")
+        #expect(ScheduleDraft.Unit.days.title(1) == "day")
+        #expect(ScheduleDraft.parse("25:00") == nil)
+
+        t.intervalHours = 36
+        let h = ScheduleDraft(editing: t)
+        #expect(h.unit == .hours && h.every == 36 && !h.useTime)
+        t.intervalHours = 48
+        #expect(ScheduleDraft(editing: t).unit == .days)
+
+        // A new disk schedule needs a mount path; it starts from the guess.
+        let disk = Disk(db: "/x/t.diskindex", id: 1, label: "Seagate", description: "", createdAt: Date())
+        let coll = Collection(db: "/x/t.diskindex", id: 2, diskLabel: "Seagate", label: "Photos", rootPath: "/mnt/seagate/Photos")
+        let node = DiskNode(label: "Seagate", disks: [disk], collections: [coll])
+        var nd = ScheduleDraft(node: node)
+        #expect(nd.path == "/mnt/seagate")
+        #expect(nd.title == "Reindex \u{201C}Seagate\u{201D}")
+        #expect(nd.request.at == "03:00" && nd.request.intervalHours == 24 && nd.request.db == "/x/t.diskindex")
+        nd.path = " "
+        #expect(!nd.isValid)
+        let cd = ScheduleDraft(node: node, collection: coll)
+        #expect(cd.isValid && cd.request.path == nil && cd.request.collection == "Photos")
+    }
+
+    @Test func testScheduleRunNote() throws {
+        func info(_ extra: String) throws -> ServerInfo {
+            let json = #"{"apiVersion":1,"version":"v1","hostname":"h","os":"linux","defaultDb":"/d","dbs":["/d"],"user":"me""# + extra + "}"
+            return try APIClient.decoder.decode(ServerInfo.self, from: Data(json.utf8))
+        }
+        #expect(scheduleRunNote(info: nil, serverName: "e") == "")
+        #expect(try scheduleRunNote(info: info(#","scheduler":false"#), serverName: "e").contains("don\u{2019}t run there"))
+        #expect(try scheduleRunNote(info: info(#","scheduler":true,"persistent":true"#), serverName: "e").contains("around the clock, whether"))
+        #expect(try scheduleRunNote(info: info(#","scheduler":true,"persistent":false"#), serverName: "e").contains("loginctl enable-linger me"))
+        #expect(try scheduleRunNote(info: info(#","scheduler":true"#), serverName: "e") == "Schedules run while diskindexer is running on e.")
+    }
 }

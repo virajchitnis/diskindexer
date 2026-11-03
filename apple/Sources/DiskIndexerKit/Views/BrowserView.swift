@@ -22,6 +22,8 @@ public struct BrowserView: View {
     @State private var showInspector = false
     @State private var showJobs = false
     @State private var indexDraft: IndexDraft?
+    @State private var scheduleDraft: ScheduleDraft?
+    @State private var showSchedules = false
     @State private var confirmInstall = false
     @State private var dismissedUpdate: String?
 
@@ -35,6 +37,10 @@ public struct BrowserView: View {
                 indexDraft = IndexDraft(node: node)
             }, onAddCollection: { node in
                 indexDraft = IndexDraft(addingTo: node)
+            }, onReindexCollection: { coll, node in
+                indexDraft = IndexDraft(reindexing: coll, in: node)
+            }, onSchedule: { draft in
+                scheduleDraft = draft
             })
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } detail: {
@@ -75,6 +81,17 @@ public struct BrowserView: View {
                         .frame(minHeight: 120, maxHeight: 420)
                 }
             }
+            if model.schedulesAvailable {
+                ToolbarItem {
+                    Button {
+                        showSchedules = true
+                    } label: {
+                        Label("Schedules", systemImage: "calendar.badge.clock")
+                    }
+                    .help("Periodic reindexing")
+                    .accessibilityIdentifier("toolbar.schedules")
+                }
+            }
             ToolbarItem {
                 Button {
                     showInspector.toggle()
@@ -89,6 +106,12 @@ public struct BrowserView: View {
                 indexDraft = nil
                 if started { showJobs = true }
             }
+        }
+        .sheet(item: $scheduleDraft) { draft in
+            ScheduleEditor(model: model, draft: draft) { scheduleDraft = nil }
+        }
+        .sheet(isPresented: $showSchedules) {
+            SchedulesView(model: model) { showSchedules = false }
         }
         .alert("Something went wrong", isPresented: Binding(
             get: { model.actionError != nil },

@@ -28,6 +28,8 @@ struct SidebarView: View {
     @Bindable var model: AppModel
     var onReindex: (DiskNode) -> Void
     var onAddCollection: (DiskNode) -> Void
+    var onReindexCollection: (Collection, DiskNode) -> Void
+    var onSchedule: (ScheduleDraft) -> Void
 
     @State private var expanded: Set<String> = []
     @State private var renaming: Collection?
@@ -154,6 +156,11 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func collectionMenu(_ coll: Collection) -> some View {
+        if let node = model.diskNodes.first(where: { $0.label == coll.diskLabel }) {
+            Button("Reindex\u{2026}") { onReindexCollection(coll, node) }
+            scheduleButton(node: node, collection: coll)
+            Divider()
+        }
         Button("Rename…") {
             newName = coll.label
             renaming = coll
@@ -179,9 +186,24 @@ struct SidebarView: View {
     @ViewBuilder
     private func diskMenu(_ node: DiskNode) -> some View {
         Button("Reindex…") { onReindex(node) }
+        scheduleButton(node: node, collection: nil)
         Button("Add Collection…") { onAddCollection(node) }
         Divider()
         Button("Delete…", role: .destructive) { deletingDisk = node }
+    }
+
+    /// "Schedule Reindexing…", or "Edit Schedule…" when there is one.
+    @ViewBuilder
+    private func scheduleButton(node: DiskNode, collection: Collection?) -> some View {
+        if model.schedulesAvailable {
+            if let s = model.schedule(disk: node.label, collection: collection?.label) {
+                Button("Edit Schedule\u{2026}") {
+                    onSchedule(ScheduleDraft(editing: s, savedLocation: collection?.rootPath ?? ""))
+                }
+            } else {
+                Button("Schedule Reindexing\u{2026}") { onSchedule(ScheduleDraft(node: node, collection: collection)) }
+            }
+        }
     }
 
     private func drop(_ items: [String], on node: DiskNode) -> Bool {

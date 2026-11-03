@@ -30,6 +30,8 @@ struct JobsView: View {
                 }
             }
         }
+        // Scheduled runs start on the server without this app knowing.
+        .task { await model.refreshJobs() }
     }
 }
 
@@ -44,6 +46,13 @@ struct JobRow: View {
                 HStack {
                     Label(job.request.disk, systemImage: "externaldrive")
                         .font(.body.weight(.medium))
+                    if job.schedule != nil {
+                        Text("Scheduled")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .background(.quaternary, in: Capsule())
+                    }
                     Spacer()
                     if job.state == .running {
                         Button("Cancel", action: onCancel)

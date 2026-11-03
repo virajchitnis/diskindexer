@@ -735,3 +735,40 @@ func TestRun_UnchangedFileFollowsItsCollection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, stats.Updated)
 }
+
+// Reindexing one collection from a copy (the disk is unplugged) updates its
+// files but keeps the location saved for it, and leaves the disk's other
+// collections alone. Without KeepRootPath the copy becomes its location.
+func TestRun_CollectionFromCopyKeepsLocation(t *testing.T) {
+	d := openTestDB(t)
+	disk := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Music/s.flac": "s"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: disk})
+	require.NoError(t, err)
+
+	cp := makeDisk(t, map[string]string{"a.jpg": "a", "new.jpg": "n"})
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "A",
+		Collections: []indexer.CollectionSpec{{Label: "Photos", RootPath: cp, KeepRootPath: true}}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	a, err := d.GetDiskByLabel("A")
+	require.NoError(t, err)
+	photos, err := d.GetCollectionByLabel(a.ID, "Photos")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(disk, "Photos"), photos.RootPath)
+	colls, err := d.ListCollections(a.ID)
+	require.NoError(t, err)
+	assert.Len(t, colls, 2)
+	files, err := d.GetFileMapForDisk(a.ID)
+	require.NoError(t, err)
+	assert.Contains(t, files, "A/Photos/new.jpg")
+	assert.Contains(t, files, "A/Music/s.flac")
+
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "A",
+		Collections: []indexer.CollectionSpec{{Label: "Photos", RootPath: cp}}})
+	require.NoError(t, err)
+	photos, err = d.GetCollectionByLabel(a.ID, "Photos")
+	require.NoError(t, err)
+	assert.Equal(t, cp, photos.RootPath)
+}

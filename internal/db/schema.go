@@ -31,6 +31,27 @@ CREATE TABLE IF NOT EXISTS files (
     UNIQUE(disk_id, path)
 );
 
+-- Periodic reindexing, run by "diskindexer serve". A schedule names its disk
+-- and collection by label (collection '' = the whole disk), so it survives a
+-- rebuild that recreates collection rows; renames, moves and deletes update
+-- it explicitly.
+CREATE TABLE IF NOT EXISTS schedules (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    disk           TEXT NOT NULL,
+    collection     TEXT NOT NULL DEFAULT '',
+    path           TEXT NOT NULL DEFAULT '',
+    mount_point    TEXT NOT NULL DEFAULT '',
+    interval_hours INTEGER NOT NULL,
+    at             TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    last_run_at    TEXT,
+    last_status    TEXT NOT NULL DEFAULT '',
+    last_message   TEXT NOT NULL DEFAULT '',
+    last_job_id    TEXT NOT NULL DEFAULT '',
+    UNIQUE(disk, collection)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     name,
     path,

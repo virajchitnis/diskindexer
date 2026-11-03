@@ -320,6 +320,12 @@ func (d *DB) MoveCollection(id, targetDiskID int64) (*Collection, error) {
 		}
 		return nil, err
 	}
+	if _, err := tx.Exec(moveScheduleCollection, targetLabel, coll.DiskLabel, coll.Label); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has a schedule for a collection named %q", ErrConflict, targetLabel, coll.Label)
+		}
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -336,6 +342,17 @@ func (d *DB) GetCollectionByPath(diskID int64, rootPath string) (*Collection, er
 		FROM collections c JOIN disks d ON c.disk_id = d.id
 		WHERE c.disk_id = ? AND c.root_path = ?
 	`, diskID, rootPath)
+	return scanCollection(row)
+}
+
+// GetCollectionByLabel returns the disk's collection with this label, or nil.
+// Labels are unique per disk.
+func (d *DB) GetCollectionByLabel(diskID int64, label string) (*Collection, error) {
+	row := d.sql.QueryRow(`
+		SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+		FROM collections c JOIN disks d ON c.disk_id = d.id
+		WHERE c.disk_id = ? AND c.label = ?
+	`, diskID, label)
 	return scanCollection(row)
 }
 
@@ -412,18 +429,28 @@ func (d *DB) GetCollectionsByLabel(collLabel, diskLabel string) ([]*Collection, 
 }
 
 func (d *DB) RenameCollection(id int64, newLabel string) error {
-	res, err := d.sql.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id)
+	coll, err := d.GetCollectionByID(id)
 	if err != nil {
+		return err
+	}
+	if coll == nil {
+		return fmt.Errorf("collection %d not found", id)
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: this disk already has a collection named %q", ErrConflict, newLabel)
 		}
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("collection %d not found", id)
+	if _, err := tx.Exec(renameScheduleCollection, newLabel, coll.DiskLabel, coll.Label); err != nil {
+		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (d *DB) UpdateCollectionIndexedAt(collID int64, t time.Time) error {
@@ -526,12 +553,24 @@ func (d *DB) DeleteAllFilesForDisk(diskID int64) error {
 // DeleteDisk removes a disk and all its collections and files (via CASCADE).
 // Returns false if no disk with that label exists.
 func (d *DB) DeleteDisk(label string) (bool, error) {
-	res, err := d.sql.Exec(`DELETE FROM disks WHERE label = ?`, label)
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	res, err := tx.Exec(`DELETE FROM disks WHERE label = ?`, label)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+	// Otherwise a disk schedule would bring the disk back.
+	if _, err := tx.Exec(deleteDiskSchedules, label); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // DeleteCollection removes a collection and all its files from the index.
@@ -539,6 +578,10 @@ func (d *DB) DeleteDisk(label string) (bool, error) {
 // collection_id, which would orphan them rather than remove them.
 // Returns false if no collection with that ID exists.
 func (d *DB) DeleteCollection(id int64) (bool, error) {
+	coll, err := d.GetCollectionByID(id)
+	if err != nil || coll == nil {
+		return false, err
+	}
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return false, err
@@ -555,6 +598,9 @@ func (d *DB) DeleteCollection(id int64) (bool, error) {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return false, nil
+	}
+	if _, err := tx.Exec(deleteCollectionSchedule, coll.DiskLabel, coll.Label); err != nil {
+		return false, err
 	}
 	return true, tx.Commit()
 }

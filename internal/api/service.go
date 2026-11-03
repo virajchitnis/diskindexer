@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/viraj/diskindexer/internal/db"
 	"github.com/viraj/diskindexer/internal/search"
@@ -37,6 +38,8 @@ type Service struct {
 	DefaultExcludes []string
 	// Persistent: see Info.Persistent. nil when unknown.
 	Persistent *bool
+	// Scheduler: see Info.Scheduler. Set by whoever calls RunScheduler.
+	Scheduler bool
 }
 
 // NewService opens defaultDB plus every path in dbPaths. defaultDB is where
@@ -86,7 +89,8 @@ func (s *Service) Info() Info {
 	}
 	return Info{APIVersion: Version, Version: s.version, Hostname: host,
 		OS: runtime.GOOS, DefaultDB: s.defaultDB, DBs: s.dbPaths, DefaultExcludes: defaults,
-		User: user, Persistent: s.Persistent}
+		User: user, Persistent: s.Persistent, Scheduler: s.Scheduler,
+		TimeZone: time.Now().In(schedulerLocation).Format("MST")}
 }
 
 // resolveDB maps a request's db field to an open handle; "" means default.

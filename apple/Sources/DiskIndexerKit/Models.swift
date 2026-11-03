@@ -19,6 +19,10 @@ public struct ServerInfo: Codable, Sendable {
     /// Whether the server keeps running, and finishes index runs, after the
     /// app disconnects. nil when unknown (or an older server).
     public var persistent: Bool?
+    /// Whether the server runs schedules; nil for servers without them.
+    public var scheduler: Bool?
+    /// The server's time zone abbreviation, which schedule times are in.
+    public var timeZone: String?
 }
 
 public struct Disk: Codable, Hashable, Sendable, Identifiable {
@@ -100,11 +104,15 @@ public struct SearchResponse: Codable, Sendable {
 public struct CollectionSpec: Codable, Hashable, Sendable, Identifiable {
     public var label: String
     public var rootPath: String
+    /// Read from rootPath this once, keeping an existing collection's saved
+    /// location (e.g. when reading a copy).
+    public var keepRootPath: Bool?
     public var id: String { label + "\u{0}" + rootPath }
 
-    public init(label: String, rootPath: String) {
+    public init(label: String, rootPath: String, keepRootPath: Bool? = nil) {
         self.label = label
         self.rootPath = rootPath
+        self.keepRootPath = keepRootPath
     }
 }
 
@@ -182,6 +190,63 @@ public struct Job: Codable, Hashable, Sendable, Identifiable {
     public var progress: Progress
     public var stats: JobStats?
     public var error: String?
+    /// The schedule that started this run, if any.
+    public var schedule: Int64?
+}
+
+/// A periodic reindex of a disk or one of its collections, run by the server.
+public struct Schedule: Codable, Hashable, Sendable, Identifiable {
+    public var db: String
+    public var scheduleID: Int64
+    public var disk: String
+    /// nil (or empty) for the whole disk.
+    public var collection: String?
+    /// The disk's mount path, or the folder a collection is read from (nil =
+    /// its saved location).
+    public var path: String?
+    public var intervalHours: Int
+    /// "HH:MM" in the server's time zone.
+    public var at: String?
+    public var enabled: Bool
+    public var mountPoint: String?
+    public var createdAt: Date
+    public var lastRunAt: Date?
+    /// running, done, failed, cancelled, skipped or interrupted.
+    public var lastStatus: String?
+    public var lastMessage: String?
+    public var lastJobId: String?
+    public var nextRunAt: Date?
+
+    /// IDs are only unique within one index, so qualify with the DB.
+    public var id: String { "\(db)#\(scheduleID)" }
+
+    enum CodingKeys: String, CodingKey {
+        case db, scheduleID = "id", disk, collection, path, intervalHours, at, enabled, mountPoint,
+             createdAt, lastRunAt, lastStatus, lastMessage, lastJobId, nextRunAt
+    }
+
+    public var isCollection: Bool { !(collection ?? "").isEmpty }
+}
+
+public struct ScheduleRequest: Codable, Hashable, Sendable {
+    public var db: String?
+    public var disk: String
+    public var collection: String?
+    public var path: String?
+    public var intervalHours: Int
+    public var at: String?
+    public var enabled: Bool
+
+    public init(db: String? = nil, disk: String, collection: String? = nil, path: String? = nil,
+                intervalHours: Int, at: String? = nil, enabled: Bool = true) {
+        self.db = db
+        self.disk = disk
+        self.collection = collection
+        self.path = path
+        self.intervalHours = intervalHours
+        self.at = at
+        self.enabled = enabled
+    }
 }
 
 public struct DirEntry: Codable, Hashable, Sendable, Identifiable {

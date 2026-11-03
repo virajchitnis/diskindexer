@@ -109,6 +109,27 @@ public final class APIClient: Sendable {
         try await send("DELETE", "v1/jobs/\(id)")
     }
 
+    public func schedules() async throws -> [Schedule] {
+        try await send("GET", "v1/schedules")
+    }
+
+    /// Creates a schedule (id nil) or replaces one's settings.
+    public func saveSchedule(_ req: ScheduleRequest, id: Int64? = nil) async throws -> Schedule {
+        if let id {
+            return try await send("PUT", "v1/schedules/\(id)", body: req)
+        }
+        return try await send("POST", "v1/schedules", body: req)
+    }
+
+    public func deleteSchedule(_ s: Schedule) async throws {
+        try await sendNoContent("DELETE", "v1/schedules/\(s.scheduleID)", query: ["db": s.db])
+    }
+
+    /// Runs a schedule now; the result says whether it started or was skipped.
+    public func runSchedule(_ s: Schedule) async throws -> Schedule {
+        try await send("POST", "v1/schedules/\(s.scheduleID)/run", query: ["db": s.db])
+    }
+
     public func fsRoots() async throws -> [DirEntry] {
         try await send("GET", "v1/fs/roots")
     }

@@ -43,7 +43,7 @@ CI (`.github/workflows/ci.yml`) runs on every push to main and every PR:
 - macOS: `make coverage-apple` and `make mac-app` (uploads the app zip).
 - macOS UI tests: generates `apple/Xcode/DiskIndexer.xcodeproj` from `project.yml` with XcodeGen and runs the XCUITest suite in `apple/UITests`. It uploads the `.xcresult` on failure.
 
-Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.start`, `results`, `status.count`, `job.phase`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
+Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.readFrom`, `index.start`, `results`, `status.count`, `job.phase`, `toolbar.schedules`, `schedule.path`, `schedule.every`, `schedule.save`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
 
 ```bash
 make test
@@ -62,6 +62,7 @@ cmd/                     # cobra commands (one file per command)
   disks.go               # disks list command
   collections.go         # collections list + rename commands
   search.go              # search command (launches TUI)
+  schedule.go            # schedule add/list/remove (run by serve)
   serve.go               # serve command: HTTP API for the GUI apps
 internal/
   api/                   # JSON wire types + Service (search, manage, index jobs, fs browse)
@@ -130,6 +131,9 @@ diskindexer collections [--disk "Label"] [--db path]
 diskindexer rename-collection <new-label> --collection "Label" [--disk "Label"] [--db path]
 diskindexer delete-collection --collection "Label" [--disk "Label"] [--db path]
 diskindexer move-collection --collection "Label" [--disk "Label"] --to "Label" [--db path]
+diskindexer reindex-collection --collection "Label" [--disk "Label"] [--from /path] [--remember-location] [--db path]
+diskindexer schedule add --disk "Label" [--collection "Label"] [--path /path] --every 6h|1d|2w [--at HH:MM] [--disabled]
+diskindexer schedule list | remove <id>
 diskindexer search [query] [--db path]... [--no-tui]
 diskindexer serve [--listen unix:/path|host:port]... [--token T] [--db path]...
 diskindexer --version
@@ -174,6 +178,8 @@ When a directory is selected in the TUI, allow the user to "enter" it and view i
 - **Index progress and errors**: `indexer.ProgressUpdate.Phase` runs loading → (clearing) → indexing (per collection) → root → deleting → sizes, and every phase is announced. Walk progress is time-throttled (`progressInterval`, 200ms) rather than per-batch, so runs of unchanged files still report. Walk errors never go to stderr; they're collected in `Stats.ErrorCount`/`Errors` (first 50), and a folder that can't be read is recorded in `run.unreadable` so files previously indexed under it are **not** deleted. Keep both rules: the index must not lose files just because a read failed.
 - **Moving collections**: `db.MoveCollection` rewrites only each path's leading disk label (renames don't rewrite paths, so the label part may be stale until a reindex) and the collection's disk; the FTS update trigger keeps search in sync. Same `.diskindex` only. `UpsertCollection` falls back to matching by (disk, label) when the root path is new, so reindexing after a move or after indexing from a copy updates the collection instead of duplicating it.
 - **Collection labels are unique per disk**: enforced by the `collections_disk_label` unique index. `db.mergeDuplicateCollections` (run from `migrate`, once, before creating the index) folds older duplicates into the most recently indexed row, keeping every file. Those duplicates came from indexing a disk from another mount path before `UpsertCollection`'s label fallback existed. The walk also rewrites an unchanged file whose `collection_id` isn't the collection it's found in (`sameCollection`), so stray rows heal on the next run.
+- **Reindexing from a copy**: `indexer.CollectionSpec.KeepRootPath` (API `keepRootPath`) walks `RootPath` but leaves an existing collection's saved `root_path` alone. `reindex-collection --from` and the app's Reindex Collection sheet set it unless the user asks to remember the location.
+- **Schedules**: the `schedules` table names its disk and collection by *label*, so a `--force` rebuild that recreates collection rows doesn't drop them. `RenameCollection`, `MoveCollection`, `DeleteCollection` and `DeleteDisk` update the table in the same transaction. `api.Service.RunScheduler` runs in `serve`, checking every minute, but not with `--stdin-watch` (`Info.scheduler`). The app hides Schedules unless `scheduler` is true. Next run: `last + interval`, or with `at`, the first `HH:MM` after `last + interval − 12h` (`nextRun`). Missed runs fire once on start; a busy index (`ErrConflict`) retries next tick. Before each run, `indexer.CheckAvailable` skips a missing or empty folder, or one under a recorded `mount_point` (`FindMountPoint` at save time) that is no longer a mount point. Keep this check: an unattended run must never empty a collection because a disk is unplugged. Runs left `running` by a stopped server are marked `interrupted` at start.
 - **No mount path**: with `--collection` and no mount path, `walkRoot` is skipped and the disk's root-level files (no collection) are never deleted; unlisted collections are preserved as always. This backs the app's "Add Collection…" for disks that aren't plugged in.
 - **Install target**: `make install` cross-compiles for Linux AMD64 and deploys to `~/.local/bin/diskindexer` on `enterprise.virajchitnis.com` via `scp`.
 

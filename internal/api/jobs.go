@@ -92,6 +92,12 @@ func newJobID() string {
 // StartIndex validates req and starts an index run in the background. Only
 // one run per DB may be active at a time.
 func (s *Service) StartIndex(req IndexRequest) (Job, error) {
+	return s.startIndex(req, 0, nil)
+}
+
+// startIndex is StartIndex for a run a schedule started; onDone gets the
+// finished job.
+func (s *Service) startIndex(req IndexRequest, scheduleID int64, onDone func(Job)) (Job, error) {
 	req.Disk = strings.TrimSpace(req.Disk)
 	if req.Disk == "" {
 		return Job{}, fmt.Errorf("%w: disk label is required", ErrBadRequest)
@@ -134,7 +140,7 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 		if info, err := os.Stat(c.RootPath); err != nil || !info.IsDir() {
 			return Job{}, fmt.Errorf("%w: collection %q: %q is not a directory", ErrBadRequest, c.Label, c.RootPath)
 		}
-		opts.Collections = append(opts.Collections, indexer.CollectionSpec{Label: c.Label, RootPath: c.RootPath})
+		opts.Collections = append(opts.Collections, indexer.CollectionSpec{Label: c.Label, RootPath: c.RootPath, KeepRootPath: c.KeepRootPath})
 	}
 
 	if err := indexer.ValidateCollectionSpecs(opts.Collections); err != nil {
@@ -160,7 +166,8 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &job{
-		snap:    Job{ID: newJobID(), State: JobRunning, Request: req, StartedAt: time.Now().UTC(), Progress: Progress{Phase: "starting"}},
+		snap: Job{ID: newJobID(), State: JobRunning, Request: req, StartedAt: time.Now().UTC(),
+			Progress: Progress{Phase: "starting"}, Schedule: scheduleID},
 		changed: make(chan struct{}),
 		cancel:  cancel,
 		done:    make(chan struct{}),
@@ -190,6 +197,10 @@ func (s *Service) StartIndex(req IndexRequest) (Job, error) {
 				s.Stats = statsFromIndexer(stats)
 			}
 		})
+		if onDone != nil {
+			snap, _ := j.watch()
+			onDone(snap)
+		}
 	}()
 
 	snap, _ := j.watch()

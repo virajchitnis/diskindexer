@@ -24,6 +24,9 @@ import (
 	"github.com/viraj/diskindexer/internal/server"
 )
 
+// scheduleTick is how often serve checks for due schedules.
+const scheduleTick = time.Minute
+
 var (
 	serveListen     []string
 	serveToken      string
@@ -110,6 +113,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// A server that only lives while a client is connected doesn't run
+	// schedules: it would stop their runs part way.
+	if !serveStdinWatch {
+		svc.Scheduler = true
+		go svc.RunScheduler(ctx, scheduleTick)
+	}
 	if serveStdinWatch {
 		go func() {
 			_, _ = io.Copy(io.Discard, os.Stdin)

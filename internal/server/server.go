@@ -37,6 +37,11 @@ func New(svc *api.Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/jobs/{id}", h.job)
 	mux.HandleFunc("DELETE /v1/jobs/{id}", h.cancelJob)
 	mux.HandleFunc("GET /v1/jobs/{id}/events", h.jobEvents)
+	mux.HandleFunc("GET /v1/schedules", h.schedules)
+	mux.HandleFunc("POST /v1/schedules", h.saveSchedule)
+	mux.HandleFunc("PUT /v1/schedules/{id}", h.saveSchedule)
+	mux.HandleFunc("DELETE /v1/schedules/{id}", h.deleteSchedule)
+	mux.HandleFunc("POST /v1/schedules/{id}/run", h.runSchedule)
 	mux.HandleFunc("GET /v1/fs/roots", h.fsRoots)
 	mux.HandleFunc("GET /v1/fs/list", h.fsList)
 
@@ -272,6 +277,70 @@ func (h *handlers) jobEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		snap, changed, _ = h.svc.WatchJob(id)
 	}
+}
+
+func (h *handlers) schedules(w http.ResponseWriter, _ *http.Request) {
+	list, err := h.svc.Schedules()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// saveSchedule creates (POST) or replaces (PUT) a schedule.
+func (h *handlers) saveSchedule(w http.ResponseWriter, r *http.Request) {
+	var id int64
+	status := http.StatusCreated
+	if r.PathValue("id") != "" {
+		var err error
+		if id, err = pathID(r); err != nil {
+			writeErr(w, err)
+			return
+		}
+		status = http.StatusOK
+	}
+	var body struct {
+		DB string `json:"db"`
+		api.ScheduleRequest
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	sc, err := h.svc.SaveSchedule(body.DB, id, body.ScheduleRequest)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, status, sc)
+}
+
+func (h *handlers) deleteSchedule(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := h.svc.DeleteSchedule(r.URL.Query().Get("db"), id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handlers) runSchedule(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	sc, err := h.svc.RunSchedule(r.URL.Query().Get("db"), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sc)
 }
 
 func (h *handlers) fsRoots(w http.ResponseWriter, _ *http.Request) {

@@ -92,6 +92,9 @@ public final class AppModel {
     public private(set) var duplicateKeys: Set<String> = []
     private var searchTask: Task<Void, Never>?
 
+    // Schedules
+    public private(set) var schedules: [Schedule] = []
+
     // Jobs
     public private(set) var jobs: [Job] = []
     private var jobWatchers: [String: Task<Void, Never>] = [:]
@@ -142,6 +145,7 @@ public final class AppModel {
         diskNodes = []
         results = []
         jobs = []
+        schedules = []
     }
 
     private func handleDisconnect(_ reason: String) {
@@ -193,6 +197,7 @@ public final class AppModel {
                 status = .connected
                 await refreshMetadata()
                 await refreshJobs()
+                await refreshSchedules()
                 scheduleSearch(debounce: false)
                 return
             } catch {
@@ -376,6 +381,7 @@ public final class AppModel {
             actionError = error.localizedDescription
         }
         await refreshMetadata()
+        await refreshSchedules()
         scheduleSearch(debounce: false)
     }
 
@@ -392,6 +398,7 @@ public final class AppModel {
             actionError = error.localizedDescription
         }
         await refreshMetadata()
+        await refreshSchedules()
         scheduleSearch(debounce: false)
     }
 
@@ -435,6 +442,7 @@ public final class AppModel {
             actionError = error.localizedDescription
         }
         await refreshMetadata()
+        await refreshSchedules()
         scheduleSearch(debounce: false)
         return moved
     }
@@ -499,7 +507,9 @@ public final class AppModel {
     }
 
     private func update(_ job: Job) {
-        let wasRunning = jobs.first { $0.id == job.id }?.state == .running
+        // A job first seen already finished (a scheduled run that was quick)
+        // changed the index just the same.
+        let wasRunning = jobs.first { $0.id == job.id }.map { $0.state == .running } ?? true
         if let i = jobs.firstIndex(where: { $0.id == job.id }) {
             // A job never goes back to running once it has finished: a
             // progress event already in flight can arrive after the cancel
@@ -512,6 +522,7 @@ public final class AppModel {
         if wasRunning && job.state != .running {
             Task {
                 await refreshMetadata()
+                if job.schedule != nil { await refreshSchedules() }
                 scheduleSearch(debounce: false)
             }
         }
@@ -568,6 +579,69 @@ public final class AppModel {
     private func stopWatchingJobs() {
         for t in jobWatchers.values { t.cancel() }
         jobWatchers = [:]
+    }
+
+    // MARK: Schedules
+
+    /// Whether the server runs schedules. Servers that only live while the
+    /// app is connected (and older ones) don't.
+    public var schedulesAvailable: Bool { info?.scheduler == true }
+
+    public func refreshSchedules() async {
+        guard let client, schedulesAvailable else { return }
+        do {
+            schedules = try await client.schedules()
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// The schedule for a disk (collection nil) or one of its collections.
+    public func schedule(disk: String, collection: String? = nil) -> Schedule? {
+        schedules.first { $0.disk == disk && ($0.collection ?? "") == (collection ?? "") }
+    }
+
+    /// Creates or updates a schedule; throws so the editor can show why.
+    public func saveSchedule(_ req: ScheduleRequest, id: Int64? = nil) async throws {
+        guard let client else { throw APIError(status: 0, message: "Not connected") }
+        _ = try await client.saveSchedule(req, id: id)
+        await refreshSchedules()
+    }
+
+    public func setScheduleEnabled(_ s: Schedule, _ enabled: Bool) async {
+        let req = ScheduleRequest(db: s.db, disk: s.disk, collection: s.collection, path: s.path,
+                                  intervalHours: s.intervalHours, at: s.at, enabled: enabled)
+        do {
+            try await saveSchedule(req, id: s.scheduleID)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    public func deleteSchedule(_ s: Schedule) async {
+        guard let client else { return }
+        do {
+            try await client.deleteSchedule(s)
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await refreshSchedules()
+    }
+
+    /// Runs a schedule now. If it started, its job is followed like any other;
+    /// if it was skipped, the schedule says why.
+    public func runSchedule(_ s: Schedule) async {
+        guard let client else { return }
+        do {
+            let updated = try await client.runSchedule(s)
+            if let id = updated.lastJobId, updated.lastStatus == "running" {
+                update(try await client.job(id))
+                watch(id)
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await refreshSchedules()
     }
 
     // MARK: Remote filesystem

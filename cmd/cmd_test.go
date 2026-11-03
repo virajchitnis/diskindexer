@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/viraj/diskindexer/internal/api"
 )
 
 // resetFlags restores every flag to its default before a run. Cobra commands
@@ -426,4 +427,85 @@ func TestPersistence(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		assert.Nil(t, persistence(false), "unknown off Linux")
 	}
+}
+
+func TestReindexCollection(t *testing.T) {
+	disk := setupHome(t)
+	_, err := run(t, "index", disk, "--disk", "D")
+	require.NoError(t, err)
+
+	// From its saved location.
+	require.NoError(t, os.WriteFile(filepath.Join(disk, "Music", "new.flac"), []byte("n"), 0o644))
+	out, err := run(t, "reindex-collection", "--collection", "Music")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Added: 1")
+
+	// From a copy: the saved location stays, unless asked.
+	cp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cp, "song.flac"), []byte("la"), 0o644))
+	out, err = run(t, "reindex-collection", "--collection", "Music", "--from", cp)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Deleted: 1")
+	out, err = run(t, "collections")
+	require.NoError(t, err)
+	assert.Contains(t, out, filepath.Join(disk, "Music"))
+	_, err = run(t, "reindex-collection", "--collection", "Music", "--from", cp, "--remember-location")
+	require.NoError(t, err)
+	out, err = run(t, "collections")
+	require.NoError(t, err)
+	assert.NotContains(t, out, filepath.Join(disk, "Music"))
+
+	_, err = run(t, "reindex-collection", "--collection", "Nope")
+	assert.ErrorContains(t, err, "not found")
+	require.NoError(t, os.RemoveAll(filepath.Join(disk, "Photos")))
+	_, err = run(t, "reindex-collection", "--collection", "Photos")
+	assert.ErrorContains(t, err, "not an available folder")
+}
+
+func TestScheduleCommands(t *testing.T) {
+	disk := setupHome(t)
+	_, err := run(t, "index", disk, "--disk", "D")
+	require.NoError(t, err)
+
+	out, err := run(t, "schedule", "list")
+	require.NoError(t, err)
+	assert.Contains(t, out, "No schedules.")
+
+	out, err = run(t, "schedule", "add", "--disk", "D", "--path", disk, "--every", "1d", "--at", "03:00")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Schedule 1 added: D, every day at 03:00.")
+	out, err = run(t, "schedule", "add", "--disk", "D", "--collection", "Music", "--every", "2w", "--disabled")
+	require.NoError(t, err)
+	assert.Contains(t, out, "D/Music, every 2 weeks.")
+	_, err = run(t, "schedule", "add", "--disk", "D", "--path", disk, "--every", "6h")
+	assert.ErrorContains(t, err, "already has a schedule")
+	_, err = run(t, "schedule", "add", "--disk", "D", "--every", "soon")
+	assert.ErrorContains(t, err, "use hours, days or weeks")
+
+	out, err = run(t, "schedule", "list")
+	require.NoError(t, err)
+	assert.Contains(t, out, "(saved location)")
+	assert.Contains(t, out, "off")
+	assert.Contains(t, out, "every day at 03:00")
+
+	out, err = run(t, "schedule", "remove", "1")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Schedule 1 removed.")
+	_, err = run(t, "schedule", "remove", "1")
+	assert.ErrorContains(t, err, "not found")
+	_, err = run(t, "schedule", "remove", "x")
+	assert.ErrorContains(t, err, "invalid schedule id")
+}
+
+func TestParseEvery(t *testing.T) {
+	for in, want := range map[string]int{"6h": 6, "1d": 24, "2W": 336} {
+		got, err := parseEvery(in)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+	for _, in := range []string{"", "h", "0d", "-1h", "3m"} {
+		_, err := parseEvery(in)
+		assert.Error(t, err, in)
+	}
+	assert.Equal(t, "every 5 hours", describeInterval(api.Schedule{ScheduleRequest: api.ScheduleRequest{IntervalHours: 5}}))
 }
