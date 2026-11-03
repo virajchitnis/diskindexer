@@ -16,7 +16,14 @@ make build               # build for current platform
 make build-linux         # cross-compile for Linux AMD64
 make build-darwin-arm64  # cross-compile for macOS Apple Silicon
 make build-darwin-amd64  # cross-compile for macOS Intel
-make install             # build-linux + scp to enterprise.virajchitnis.com
+make install             # build-linux + scp (via rename) to enterprise.virajchitnis.com
+make install-service     # install + systemd user service running `diskindexer serve`
+make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
+make dmg                 # build/DiskIndexer.dmg (app + Applications link); attached by `make release`
+make install-mac         # app → /Applications, CLI symlink → ~/.local/bin/diskindexer
+make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
+make test-apple          # Swift tests incl. AppModel tests against a real `serve` (builds the binary first)
+make coverage            # Go + Swift coverage gates (fail below COVERAGE_MIN=80)
 make release             # build all three platform binaries + gh release create
 make test                # run all tests
 make clean               # remove build artifacts
@@ -30,6 +37,13 @@ go build -ldflags "-X github.com/viraj/diskindexer/cmd.version=$(git describe --
 ```
 
 ## Test
+
+CI (`.github/workflows/ci.yml`) runs on every push to main and every PR:
+- Ubuntu: Go vet, race tests, the Go coverage gate, and cross-compiles.
+- macOS: `make coverage-apple` and `make mac-app` (uploads the app zip).
+- macOS UI tests: generates `apple/Xcode/DiskIndexer.xcodeproj` from `project.yml` with XcodeGen and runs the XCUITest suite in `apple/UITests`. It uploads the `.xcresult` on failure.
+
+Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.readFrom`, `index.start`, `results`, `status.count`, `job.phase`, `toolbar.schedules`, `schedule.path`, `schedule.every`, `schedule.save`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
 
 ```bash
 make test
@@ -48,13 +62,18 @@ cmd/                     # cobra commands (one file per command)
   disks.go               # disks list command
   collections.go         # collections list + rename commands
   search.go              # search command (launches TUI)
+  schedule.go            # schedule add/list/remove (run by serve)
+  serve.go               # serve command: HTTP API for the GUI apps
 internal/
+  api/                   # JSON wire types + Service (search, manage, index jobs, fs browse)
+  server/                # net/http routes over api.Service, SSE job progress, bearer auth
   config/                # TOML config parsing (~/.config/diskindexer/config.toml)
   db/                    # SQLite schema, migrations, all DB operations
   indexer/               # filesystem walk, change detection, incremental logic
   search/                # query building, filter application, multi-DB merge
 tui/                     # bubbletea interactive TUI (model, styles, tests)
-testdata/                # synthetic file trees for integration tests
+apple/                   # SwiftPM package: DiskIndexerKit (shared, macOS+iOS) + DiskIndexerMac app
+deploy/                  # systemd user unit for `diskindexer serve`
 ```
 
 ## Key Design Decisions
@@ -66,6 +85,23 @@ testdata/                # synthetic file trees for integration tests
 - **Multi-DB search**: each `.diskindex` opened as a separate connection; results merged in Go before display.
 - **FTS5 virtual table** on `(name, path)` with triggers to stay in sync — powers fast text search.
 - **Directory sizes**: computed in Go at the end of every index run (`ComputeAndUpdateDirSizes`). All file rows are fetched in one query; sizes are accumulated in memory by walking each file's ancestor paths (O(N × depth)); collections are processed in parallel goroutines (disjoint subtrees); results are written back in sequential batched UPDATEs (200/tx) with progress callbacks. Replaces the previous O(N²) correlated SQL subquery.
+
+- **GUI architecture**: the Go binary is the only engine. `diskindexer serve` exposes `internal/api` as JSON over HTTP (`/v1/...`; bump `api.Version` on breaking changes). The macOS app always talks to that API: in local mode it launches its bundled binary with `--listen 127.0.0.1:0 --stdin-watch` and a random token; in remote mode it `ssh -L`-forwards a loopback port to the server's Unix socket. Index jobs run in the server (cancellable via `indexer.RunContext`) and each opens its own DB handle, so searches stay responsive during a run.
+- **Results table rebuilds per result set**: `ResultsTable` is keyed with `.id(model.resultsGeneration)`, which `setResults` bumps only when the results actually change. Letting SwiftUI insert hundreds of rows into a live `Table`/`List` makes AppKit log "reentrant operation in its NSTableView delegate" (slated to become an assert). Column widths survive via `TableColumnCustomization` in `@SceneStorage`. Keep this if you touch the table.
+- **Connection states**: `ConnectionStatus` is connecting → connected, or `.waiting` (first connect failing transiently; retried with backoff), `.reconnecting` (was connected), `.failed` (needs the user). Transports throw `ConnectionFailure(isTransient:)`; `SSHFailureKind.classify` sorts ssh's stderr into network/hostKey/auth/other, and only hostKey and auth stop retrying. Ordinary requests time out after 15s; progress streams use a separate 120s session.
+- **Job recovery**: if a job's progress stream ends while the job is still running and the connection is fine (e.g. the server restarted behind a live tunnel), `AppModel.watch` asks `GET /v1/jobs/{id}`. It re-attaches if the job is still running, marks it `.interrupted` (client-only state) on a 404, or marks it lost after `jobRecheckAttempts`. `refreshJobs` keeps interrupted and orphaned jobs.
+- **Multiple addresses**: `RemoteConnection.hosts` (ordered; decodes the older single `host`). `SSHTunnel.connect` uses `firstReachable`, which moves to the next address only on `ConnectionFailure.Reason.unreachable` (network-type ssh errors); any other failure means the server answered and is reported directly. Non-final addresses use `ConnectTimeout=4`.
+- **Finding the server**: `SSHTunnel.findServer` runs `findServerScript` over ssh.
+  - When a systemd unit exists, it waits up to 5s for the socket (without linger the service only starts with this login).
+  - If there's no socket but `~/.local/bin/diskindexer` (or one on PATH) exists, the app runs `diskindexer serve --stdin-watch` *as the ssh command*, with the lifeline as stdin. App exit means EOF, so the server exits, then ssh does ("on demand").
+  - Only when nothing is installed does it report `.notRunning`, which makes the app offer Set Up.
+- **Host keys**: on a host-key failure, `SSHTunnel.hostKeyFailure` re-runs `ssh -v` and `HostKeyProblem.parse` reads the `Server host key:` and `Offending … key in file:line` lines; other addresses of the same server whose trusted key matches go in `matchingAddresses`. `trustHostKey` deletes only the offending line, after checking it still holds the shown key (backup `<file>.old`), then lets `ssh -o StrictHostKeyChecking=accept-new` add the key. If the key ssh then sees isn't the one shown, it removes it again and fails. A changed key with no matching address needs a second confirmation. Host-key failures never auto-retry.
+- **Persistence**: `Info.persistent` is false for `--stdin-watch` servers and on Linux without linger (`loginctl`), nil if unknown. `backgroundRunNote` turns it into the Index sheet's warning. Linger is optional.
+- **Install/update**: `SSHTunnel` conforms to `ServerManaging`. On macOS servers or Linux without systemd, it only uploads the binary (`InstallReport.onDemand`). `installServer` runs `uname`, uploads the bundled `diskindexer-linux-{amd64,arm64}` to `~/.local/bin` (rename into place), then runs `serviceScript` with `sh -s`: it writes the bundled `diskindexer.service`, restarts the service, waits for the socket, and reports linger and version. `make mac-app` bundles these files (the macOS binary is the bundled universal `diskindexer`). The service path is for Linux with systemd. `AppModel` offers Set Up on `.notRunning` or `.incompatibleVersion`, and Update when `ServerVersion(server) < ServerVersion(bundled)` (from git describe; untagged builds never prompt).
+- **Child processes must die with the app**: the local server uses `serve --stdin-watch`; the SSH master runs through `diesWithParent` (a `/bin/sh` wrapper that kills ssh when the app's stdin pipe closes). `disconnect()` closes that pipe rather than only terminating the wrapper. Without this, a crash or force quit leaves ssh running forever.
+- **One SSH login per connect**: `SSHTunnel.startMaster` starts `ssh -M -N` with its own `ControlPath` in a `mkdtemp` folder under `/tmp` (control sockets have a short path limit). It waits for the socket file to appear, which means the login succeeded. `findServer`, the on-demand `serve` session and `-O forward` then all run over it with `ControlMaster=no`, and `ControlPath=none` stays on every other ssh call. Termination handlers ignore processes that aren't the current master or session, so a late exit from an old connection can't disconnect a new one. Keepalive is 5s×6; `AppModel.networkChanged` (fed by `NetworkWatcher`/NWPathMonitor) pings with a 4s timeout after a network change and reconnects at once if it fails, or retries now when waiting.
+- **Slow links**: after `info`, `establish` loads metadata, jobs and schedules concurrently (`async let`) and records `connectTimings` (also logged at notice level, category `connect`). An `info` slower than 0.25s rebuilds the `APIClient` with `latency`, which scales its timeouts. `server.gzipJSON` compresses everything except `/events`. `AppModel` keeps the last server results as `baseline`, and `filterLocally` shows the matches among them at once, when `narrows(req, base)`, with `provisional` set. Snapshots (`snapshotDirectory` + `cacheKey`, one JSON per connection) restore the sidebar and default-view results on launch (`showingSnapshot`). The Mac app turns snapshots off when `DISKINDEXER_DB` is set, so UI tests start clean.
+- **Swift code layout**: anything needing `Process`/AppKit stays in `DiskIndexerMac`; `DiskIndexerKit` must stay iOS-compatible for the planned iPhone/iPad app (remote-only, SSH via Citadel, sideloaded with AltStore).
 
 ## Index File Location
 
@@ -81,19 +117,27 @@ default_db = "~/.config/diskindexer/global.diskindex"
 known_dbs = [
   "~/.config/diskindexer/global.diskindex",
 ]
+
+# Skipped by every index run (CLI and serve), on top of each disk's own excludes.
+default_excludes = [".snapshots", "lost+found"]
 ```
 
 ## CLI Commands
 
 ```bash
-diskindexer index <mount-path> --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--exclude name] [--force]
+diskindexer index [mount-path] --disk "Label" [--db path] [--collection "Label:/absolute/path"] [--exclude name] [--force]   # mount-path optional with --collection
 diskindexer reindex <mount-path> --disk "Label" [--db path] [--exclude name]
 diskindexer disks [--db path]
 diskindexer delete-disk --disk "Label" [--db path]
 diskindexer collections [--disk "Label"] [--db path]
 diskindexer rename-collection <new-label> --collection "Label" [--disk "Label"] [--db path]
 diskindexer delete-collection --collection "Label" [--disk "Label"] [--db path]
+diskindexer move-collection --collection "Label" [--disk "Label"] --to "Label" [--db path]
+diskindexer reindex-collection --collection "Label" [--disk "Label"] [--from /path] [--remember-location] [--db path]
+diskindexer schedule add --disk "Label" [--collection "Label"] [--path /path] --every 6h|1d|2w [--at HH:MM] [--disabled]
+diskindexer schedule list | remove <id>
 diskindexer search [query] [--db path]... [--no-tui]
+diskindexer serve [--listen unix:/path|host:port]... [--token T] [--db path]...
 diskindexer --version
 ```
 
@@ -132,6 +176,13 @@ When a directory is selected in the TUI, allow the user to "enter" it and view i
 - **Versioning**: the binary version is embedded at build time via `-ldflags`. Use `git describe --tags --always --dirty` as the value. Falls back to `"dev"` when built without ldflags.
 - **Path format**: file paths are stored as `DiskLabel/Collection/path/to/file` — the disk label is always the first component.
 - **Collections outside mount**: `--collection` paths do not need to be under the mount path; they are indexed relative to the collection root.
+- **Excludes**: patterns match file *and* folder names (`filepath.Match`) at any depth; excluded entries aren't marked seen, so previously indexed copies are removed. Effective excludes = `Options.DefaultExcludes` (config `default_excludes`, unless `--no-default-excludes` / `noDefaultExcludes`) ∪ the disk's own. `Options.Excludes == nil` reuses the disk's saved list (`disks.excludes`, JSON, added by a migration in `db.migrate`); a non-nil slice, even empty, replaces it. The app always sends the field, so clearing it clears the list.
+- **Index progress and errors**: `indexer.ProgressUpdate.Phase` runs loading → (clearing) → indexing (per collection) → root → deleting → sizes, and every phase is announced. Walk progress is time-throttled (`progressInterval`, 200ms) rather than per-batch, so runs of unchanged files still report. Walk errors never go to stderr; they're collected in `Stats.ErrorCount`/`Errors` (first 50), and a folder that can't be read is recorded in `run.unreadable` so files previously indexed under it are **not** deleted. Keep both rules: the index must not lose files just because a read failed.
+- **Moving collections**: `db.MoveCollection` rewrites only each path's leading disk label (renames don't rewrite paths, so the label part may be stale until a reindex) and the collection's disk; the FTS update trigger keeps search in sync. Same `.diskindex` only. `UpsertCollection` falls back to matching by (disk, label) when the root path is new, so reindexing after a move or after indexing from a copy updates the collection instead of duplicating it.
+- **Collection labels are unique per disk**: enforced by the `collections_disk_label` unique index. `db.mergeDuplicateCollections` (run from `migrate`, once, before creating the index) folds older duplicates into the most recently indexed row, keeping every file. Those duplicates came from indexing a disk from another mount path before `UpsertCollection`'s label fallback existed. The walk also rewrites an unchanged file whose `collection_id` isn't the collection it's found in (`sameCollection`), so stray rows heal on the next run.
+- **Reindexing from a copy**: `indexer.CollectionSpec.KeepRootPath` (API `keepRootPath`) walks `RootPath` but leaves an existing collection's saved `root_path` alone. `reindex-collection --from` and the app's Reindex Collection sheet set it unless the user asks to remember the location.
+- **Schedules**: the `schedules` table names its disk and collection by *label*, so a `--force` rebuild that recreates collection rows doesn't drop them. `RenameCollection`, `MoveCollection`, `DeleteCollection` and `DeleteDisk` update the table in the same transaction. `api.Service.RunScheduler` runs in `serve`, checking every minute, but not with `--stdin-watch` (`Info.scheduler`). The app hides Schedules unless `scheduler` is true. Next run: `last + interval`, or with `at`, the first `HH:MM` after `last + interval − 12h` (`nextRun`). Missed runs fire once on start; a busy index (`ErrConflict`) retries next tick. Before each run, `indexer.CheckAvailable` skips a missing or empty folder, or one under a recorded `mount_point` (`FindMountPoint` at save time) that is no longer a mount point. Keep this check: an unattended run must never empty a collection because a disk is unplugged. Runs left `running` by a stopped server are marked `interrupted` at start.
+- **No mount path**: with `--collection` and no mount path, `walkRoot` is skipped and the disk's root-level files (no collection) are never deleted; unlisted collections are preserved as always. This backs the app's "Add Collection…" for disks that aren't plugged in.
 - **Install target**: `make install` cross-compiles for Linux AMD64 and deploys to `~/.local/bin/diskindexer` on `enterprise.virajchitnis.com` via `scp`.
 
 ## Libraries

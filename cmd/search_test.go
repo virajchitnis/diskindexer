@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"time"
+	"path/filepath"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,4 +55,31 @@ func TestParseSize(t *testing.T) {
 			assert.Equal(t, tc.want, got, "input=%q", tc.input)
 		}
 	}
+}
+
+// --before covers the whole local day, including the 25-hour day when
+// daylight saving time ends.
+func TestBeforeCoversWholeLocalDay(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tz database")
+	}
+	orig := time.Local
+	time.Local = ny
+	defer func() { time.Local = orig }()
+
+	disk := setupHome(t)
+	// 23:30 on 2026-11-01, the day New York leaves daylight saving time.
+	late := time.Date(2026, 11, 1, 23, 30, 0, 0, ny)
+	require.NoError(t, os.Chtimes(filepath.Join(disk, "readme.txt"), late, late))
+	_, err = run(t, "index", disk, "--disk", "D")
+	require.NoError(t, err)
+
+	out, err := run(t, "search", "readme", "--no-tui", "--before", "2026-11-01")
+	require.NoError(t, err)
+	assert.Contains(t, out, "readme.txt")
+
+	out, err = run(t, "search", "readme", "--no-tui", "--before", "2026-10-31")
+	require.NoError(t, err)
+	assert.Contains(t, out, "No results")
 }

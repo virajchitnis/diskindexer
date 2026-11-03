@@ -44,7 +44,33 @@ This only affects the index — files on the actual disk are untouched.`,
 	RunE: runDeleteCollection,
 }
 
+var (
+	moveCollectionLabel     string
+	moveCollectionDiskLabel string
+	moveCollectionTarget    string
+)
+
+var moveCollectionCmd = &cobra.Command{
+	Use:   "move-collection",
+	Short: "Move a collection and its files to another disk in the index",
+	Long: `Reassigns a collection to another disk without re-reading anything: every
+indexed path's disk label is changed to the target's. Use it after physically
+moving a folder from one disk to another; reindex the target disk later to
+pick up any other changes.
+
+Both disks must be in the same index file, and the target must not already
+have a collection with the same name. Files on the actual disks are untouched.`,
+	RunE: runMoveCollection,
+}
+
 func init() {
+	moveCollectionCmd.Flags().StringVar(&moveCollectionLabel, "collection", "", "collection label to move (required)")
+	moveCollectionCmd.Flags().StringVar(&moveCollectionDiskLabel, "disk", "", "disk label to disambiguate when multiple collections share the same name")
+	moveCollectionCmd.Flags().StringVar(&moveCollectionTarget, "to", "", "label of the disk to move it to (required)")
+	_ = moveCollectionCmd.MarkFlagRequired("collection")
+	_ = moveCollectionCmd.MarkFlagRequired("to")
+	rootCmd.AddCommand(moveCollectionCmd)
+
 	collectionsCmd.Flags().StringVar(&collectionsDiskLabel, "disk", "", "filter to collections on this disk")
 
 	renameCollectionCmd.Flags().StringVar(&renameCollectionLabel, "collection", "", "collection label to rename (required)")
@@ -163,5 +189,33 @@ func runDeleteCollection(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("collection %q not found", deleteCollectionLabel)
 	}
 	fmt.Printf("Collection %q on disk %q and all its files removed from the index.\n", deleteCollectionLabel, coll.DiskLabel)
+	return nil
+}
+
+func runMoveCollection(_ *cobra.Command, _ []string) error {
+	cfg := loadConfig()
+	database := openDB(resolveSingleDB(cfg))
+	defer database.Close()
+
+	coll, err := resolveCollection(database, moveCollectionLabel, moveCollectionDiskLabel)
+	if err != nil {
+		return err
+	}
+	target, err := database.GetDiskByLabel(moveCollectionTarget)
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return fmt.Errorf("disk %q not found", moveCollectionTarget)
+	}
+	if target.ID == coll.DiskID {
+		fmt.Printf("Collection %q is already on disk %q.\n", coll.Label, target.Label)
+		return nil
+	}
+	moved, err := database.MoveCollection(coll.ID, target.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Collection %q moved from disk %q to %q (root: %s).\n", coll.Label, coll.DiskLabel, moved.DiskLabel, moved.RootPath)
 	return nil
 }

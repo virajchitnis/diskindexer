@@ -10,6 +10,9 @@ import (
 type Config struct {
 	DefaultDB string   `toml:"default_db"`
 	KnownDBs  []string `toml:"known_dbs"`
+	// DefaultExcludes are skipped by every index run, on top of the
+	// disk's own excludes.
+	DefaultExcludes []string `toml:"default_excludes"`
 }
 
 func DefaultConfigPath() string {

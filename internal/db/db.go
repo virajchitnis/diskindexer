@@ -1,7 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -52,8 +55,70 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
-	_, err := d.sql.Exec(schema)
-	return err
+	if _, err := d.sql.Exec(schema); err != nil {
+		return err
+	}
+	// Columns added after the first release; CREATE TABLE IF NOT EXISTS
+	// doesn't add them to existing indexes.
+	var n int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('disks') WHERE name = 'excludes'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := d.sql.Exec(`ALTER TABLE disks ADD COLUMN excludes TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return d.mergeDuplicateCollections()
+}
+
+// mergeDuplicateCollections makes collection labels unique per disk. Older
+// versions created a second collection when a disk was indexed from another
+// mount path (e.g. from a copy), and files that hadn't changed stayed with the
+// old one. Same disk and label means the same files (paths are
+// Disk/Collection/...), so these rows are one collection: files move to the
+// most recently indexed row, whose root path is current, and the rest go.
+// The unique index then keeps it that way.
+func (d *DB) mergeDuplicateCollections() error {
+	var exists int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'collections_disk_label'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists > 0 {
+		return nil
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	// For each duplicated (disk, label), the row to keep: latest indexed,
+	// then newest.
+	_, err = tx.Exec(`
+		CREATE TEMP TABLE collection_merge AS
+		SELECT c.id AS old_id,
+		       (SELECT k.id FROM collections k
+		         WHERE k.disk_id = c.disk_id AND k.label = c.label
+		         ORDER BY k.last_indexed_at IS NULL, k.last_indexed_at DESC, k.id DESC
+		         LIMIT 1) AS keep_id
+		FROM collections c`)
+	if err != nil {
+		return err
+	}
+	stmts := []string{
+		`DELETE FROM collection_merge WHERE old_id = keep_id`,
+		`UPDATE files SET collection_id = (SELECT keep_id FROM collection_merge WHERE old_id = files.collection_id)
+		 WHERE collection_id IN (SELECT old_id FROM collection_merge)`,
+		`DELETE FROM collections WHERE id IN (SELECT old_id FROM collection_merge)`,
+		`DROP TABLE collection_merge`,
+		`CREATE UNIQUE INDEX collections_disk_label ON collections(disk_id, label)`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // BeginTx starts a transaction for batch operations.
@@ -78,7 +143,7 @@ func (d *DB) UpsertDisk(label, description string) (*Disk, error) {
 
 func (d *DB) GetDiskByLabel(label string) (*Disk, error) {
 	row := d.sql.QueryRow(
-		`SELECT id, label, description, created_at, last_indexed_at FROM disks WHERE label = ?`,
+		`SELECT id, label, description, created_at, last_indexed_at, excludes FROM disks WHERE label = ?`,
 		label,
 	)
 	return scanDisk(row)
@@ -86,7 +151,7 @@ func (d *DB) GetDiskByLabel(label string) (*Disk, error) {
 
 func (d *DB) ListDisks() ([]*Disk, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, label, description, created_at, last_indexed_at FROM disks ORDER BY label`,
+		`SELECT id, label, description, created_at, last_indexed_at, excludes FROM disks ORDER BY label`,
 	)
 	if err != nil {
 		return nil, err
@@ -103,6 +168,21 @@ func (d *DB) ListDisks() ([]*Disk, error) {
 	return disks, rows.Err()
 }
 
+// SetDiskExcludes saves the exclude patterns a disk was indexed with, so the
+// next run (reindex, add collection) can reuse them.
+func (d *DB) SetDiskExcludes(diskID int64, excludes []string) error {
+	v := ""
+	if len(excludes) > 0 {
+		b, err := json.Marshal(excludes)
+		if err != nil {
+			return err
+		}
+		v = string(b)
+	}
+	_, err := d.sql.Exec(`UPDATE disks SET excludes = ? WHERE id = ?`, v, diskID)
+	return err
+}
+
 func (d *DB) UpdateDiskIndexedAt(diskID int64, t time.Time) error {
 	_, err := d.sql.Exec(
 		`UPDATE disks SET last_indexed_at = ? WHERE id = ?`,
@@ -113,8 +193,40 @@ func (d *DB) UpdateDiskIndexedAt(diskID int64, t time.Time) error {
 
 // ── Collections ───────────────────────────────────────────────────────────────
 
+// UpsertCollection finds or creates the collection for (diskID, rootPath).
+// A collection is matched by its root path first; failing that, by label on
+// the same disk, so a collection that was moved here from another disk, or
+// indexed before from a different folder (e.g. a copy on a server), is
+// updated in place instead of duplicated. Its root path then becomes rootPath.
 func (d *DB) UpsertCollection(diskID int64, label, rootPath string) (*Collection, error) {
-	_, err := d.sql.Exec(`
+	existing, err := d.GetCollectionByPath(diskID, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		var ids []int64
+		rows, err := d.sql.Query(`SELECT id FROM collections WHERE disk_id = ? AND label = ?`, diskID, label)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		// Only adopt an unambiguous match.
+		if len(ids) == 1 {
+			if _, err := d.sql.Exec(`UPDATE collections SET root_path = ? WHERE id = ?`, rootPath, ids[0]); err != nil {
+				return nil, err
+			}
+			return d.GetCollectionByPath(diskID, rootPath)
+		}
+	}
+	_, err = d.sql.Exec(`
 		INSERT INTO collections (disk_id, label, root_path)
 		VALUES (?, ?, ?)
 		ON CONFLICT(disk_id, root_path) DO UPDATE SET label = excluded.label
@@ -125,12 +237,122 @@ func (d *DB) UpsertCollection(diskID int64, label, rootPath string) (*Collection
 	return d.GetCollectionByPath(diskID, rootPath)
 }
 
+func (d *DB) GetCollectionByID(id int64) (*Collection, error) {
+	row := d.sql.QueryRow(`
+		SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+		FROM collections c JOIN disks d ON c.disk_id = d.id
+		WHERE c.id = ?
+	`, id)
+	return scanCollection(row)
+}
+
+// ErrConflict reports that an operation would collide with existing data.
+var ErrConflict = errors.New("conflict")
+
+// MoveCollection reassigns a collection and all its files to another disk in
+// the same index, without re-reading anything from disk. Each file path's
+// leading disk label is swapped for the target's; the rest of the path is
+// kept as stored. The FTS index follows via its update trigger, and folder
+// sizes are unaffected since they are totals within the collection.
+//
+// The collection's root path is moved under the target disk's mount point
+// when that can be inferred (the target's collections share one parent), so a
+// later reindex of the target matches it; otherwise it is left as is, and the
+// reindex matches the collection by label instead.
+//
+// Returns nil if the collection doesn't exist, and ErrConflict if the target
+// disk already has a collection with the same label or a file at a path the
+// move would produce. Moving to the collection's own disk is a no-op.
+func (d *DB) MoveCollection(id, targetDiskID int64) (*Collection, error) {
+	coll, err := d.GetCollectionByID(id)
+	if err != nil || coll == nil {
+		return nil, err
+	}
+	if coll.DiskID == targetDiskID {
+		return coll, nil
+	}
+	var targetLabel string
+	if err := d.sql.QueryRow(`SELECT label FROM disks WHERE id = ?`, targetDiskID).Scan(&targetLabel); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("target disk %d not found", targetDiskID)
+		}
+		return nil, err
+	}
+	targetColls, err := d.ListCollections(targetDiskID)
+	if err != nil {
+		return nil, err
+	}
+	parents := map[string]struct{}{}
+	for _, c := range targetColls {
+		if c.Label == coll.Label {
+			return nil, fmt.Errorf("%w: disk %q already has a collection named %q", ErrConflict, targetLabel, coll.Label)
+		}
+		parents[filepath.Dir(c.RootPath)] = struct{}{}
+	}
+	newRoot := coll.RootPath
+	if len(parents) == 1 {
+		for p := range parents {
+			newRoot = filepath.Join(p, filepath.Base(coll.RootPath))
+		}
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Files are "<disk>/<...>"; swap only the leading disk label.
+	oldPrefix := coll.DiskLabel + "/"
+	if _, err := tx.Exec(`
+		UPDATE files
+		SET disk_id = ?, path = ? || substr(path, length(?) + 1)
+		WHERE collection_id = ? AND substr(path, 1, length(?)) = ?
+	`, targetDiskID, targetLabel+"/", oldPrefix, id, oldPrefix, oldPrefix); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has files at the paths this collection would move to", ErrConflict, targetLabel)
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE collections SET disk_id = ?, root_path = ? WHERE id = ?`, targetDiskID, newRoot, id); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has a collection at %s", ErrConflict, targetLabel, newRoot)
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(moveScheduleCollection, targetLabel, coll.DiskLabel, coll.Label); err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: disk %q already has a schedule for a collection named %q", ErrConflict, targetLabel, coll.Label)
+		}
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetCollectionByID(id)
+}
+
+func isUniqueViolation(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 func (d *DB) GetCollectionByPath(diskID int64, rootPath string) (*Collection, error) {
 	row := d.sql.QueryRow(`
 		SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
 		FROM collections c JOIN disks d ON c.disk_id = d.id
 		WHERE c.disk_id = ? AND c.root_path = ?
 	`, diskID, rootPath)
+	return scanCollection(row)
+}
+
+// GetCollectionByLabel returns the disk's collection with this label, or nil.
+// Labels are unique per disk.
+func (d *DB) GetCollectionByLabel(diskID int64, label string) (*Collection, error) {
+	row := d.sql.QueryRow(`
+		SELECT c.id, c.disk_id, d.label, c.label, c.root_path, c.last_indexed_at
+		FROM collections c JOIN disks d ON c.disk_id = d.id
+		WHERE c.disk_id = ? AND c.label = ?
+	`, diskID, label)
 	return scanCollection(row)
 }
 
@@ -207,15 +429,28 @@ func (d *DB) GetCollectionsByLabel(collLabel, diskLabel string) ([]*Collection, 
 }
 
 func (d *DB) RenameCollection(id int64, newLabel string) error {
-	res, err := d.sql.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id)
+	coll, err := d.GetCollectionByID(id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if coll == nil {
 		return fmt.Errorf("collection %d not found", id)
 	}
-	return nil
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(`UPDATE collections SET label = ? WHERE id = ?`, newLabel, id); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: this disk already has a collection named %q", ErrConflict, newLabel)
+		}
+		return err
+	}
+	if _, err := tx.Exec(renameScheduleCollection, newLabel, coll.DiskLabel, coll.Label); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) UpdateCollectionIndexedAt(collID int64, t time.Time) error {
@@ -318,12 +553,24 @@ func (d *DB) DeleteAllFilesForDisk(diskID int64) error {
 // DeleteDisk removes a disk and all its collections and files (via CASCADE).
 // Returns false if no disk with that label exists.
 func (d *DB) DeleteDisk(label string) (bool, error) {
-	res, err := d.sql.Exec(`DELETE FROM disks WHERE label = ?`, label)
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	res, err := tx.Exec(`DELETE FROM disks WHERE label = ?`, label)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+	// Otherwise a disk schedule would bring the disk back.
+	if _, err := tx.Exec(deleteDiskSchedules, label); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // DeleteCollection removes a collection and all its files from the index.
@@ -331,6 +578,10 @@ func (d *DB) DeleteDisk(label string) (bool, error) {
 // collection_id, which would orphan them rather than remove them.
 // Returns false if no collection with that ID exists.
 func (d *DB) DeleteCollection(id int64) (bool, error) {
+	coll, err := d.GetCollectionByID(id)
+	if err != nil || coll == nil {
+		return false, err
+	}
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return false, err
@@ -347,6 +598,9 @@ func (d *DB) DeleteCollection(id int64) (bool, error) {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return false, nil
+	}
+	if _, err := tx.Exec(deleteCollectionSchedule, coll.DiskLabel, coll.Label); err != nil {
+		return false, err
 	}
 	return true, tx.Commit()
 }
@@ -452,8 +706,9 @@ func computeDirSizes(files []dirSizeRow) map[int64]int64 {
 // resulting UPDATEs are written back to SQLite sequentially in batches of 200.
 //
 // progressFn is called after each batch with (done, total) directory counts.
-// Passing nil disables progress reporting.
-func (d *DB) ComputeAndUpdateDirSizes(diskID int64, progressFn func(done, total int)) error {
+// Passing nil disables progress reporting. Cancelling ctx stops the write-back
+// between batches and returns ctx.Err().
+func (d *DB) ComputeAndUpdateDirSizes(ctx context.Context, diskID int64, progressFn func(done, total int)) error {
 	files, err := d.fetchAllFilesForDisk(diskID)
 	if err != nil {
 		return fmt.Errorf("fetch files: %w", err)
@@ -509,6 +764,9 @@ func (d *DB) ComputeAndUpdateDirSizes(diskID int64, progressFn func(done, total 
 	const batchSize = 200
 	done := 0
 	for len(updates) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		batch := updates
 		if len(batch) > batchSize {
 			batch = updates[:batchSize]
@@ -707,7 +965,8 @@ type scanner interface {
 func scanDisk(s scanner) (*Disk, error) {
 	d := &Disk{}
 	var createdAt, lastIndexedAt sql.NullString
-	if err := s.Scan(&d.ID, &d.Label, &d.Description, &createdAt, &lastIndexedAt); err != nil {
+	var excludes string
+	if err := s.Scan(&d.ID, &d.Label, &d.Description, &createdAt, &lastIndexedAt, &excludes); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -719,6 +978,9 @@ func scanDisk(s scanner) (*Disk, error) {
 	if lastIndexedAt.Valid {
 		t, _ := time.Parse(time.RFC3339, lastIndexedAt.String)
 		d.LastIndexedAt = &t
+	}
+	if excludes != "" {
+		_ = json.Unmarshal([]byte(excludes), &d.Excludes)
 	}
 	return d, nil
 }

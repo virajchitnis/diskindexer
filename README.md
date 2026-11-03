@@ -11,11 +11,13 @@ Built for disks full of photos and videos — fast on 5 TB+, no file hashing, in
 - **Directory sizes** — computed automatically at the end of every index run; no re-scan needed
 - **Collections** — top-level directories are auto-detected as collections; manual override supported
 - **Interactive TUI** — live search with disk, collection, and type filters, sorting, browser panel, detail panel, and one-key clipboard copy
-- **Exclude directories** — skip directories by name or glob at any depth during indexing (`--exclude`)
+- **Excludes** — skip files and folders by name or glob at any depth. Set defaults once in the config; each disk also remembers its own excludes
 - **Duplicate highlighting** — files and directories sharing the same name and size are highlighted across all disks
 - **Text/pipe mode** — plain tabular output when piped or with `--no-tui`, suitable for scripting
+- **Scheduled reindexing** — `diskindexer serve` reindexes disks or single collections on a schedule, and skips runs while a disk is unplugged instead of emptying its index
 - **Multi-disk search** — search across multiple `.diskindex` files in a single query
 - **Static binary** — no runtime dependencies; single binary for Linux and macOS
+- **macOS app** — a native SwiftUI app that indexes and searches on your Mac, or acts as the GUI for diskindexer running on a server (over SSH)
 
 ## Installation
 
@@ -45,7 +47,15 @@ The resulting binary is statically linked and requires no runtime dependencies o
 |---|---|
 | `make build` | Build for the current platform |
 | `make build-linux` | Cross-compile for Linux AMD64 |
-| `make test` | Run all tests |
+| `make test` | Run all Go tests |
+| `make test-apple` | Run the Swift tests for the macOS app, including end-to-end tests of the app logic against a real `diskindexer serve` |
+| `make coverage` | Run the Go and Swift tests with coverage, and fail if either is below 80% (`COVERAGE_MIN`) |
+| `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
+| `make dmg` | Build `build/DiskIndexer.dmg`, a drag-to-install disk image |
+| `make install-mac` | Install the app to `/Applications` and link its CLI to `~/.local/bin/diskindexer` |
+| `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns` and a 1024 px PNG |
+| `make install` | Build for Linux and copy to the server |
+| `make install-service` | `install`, then set up and restart the `diskindexer serve` systemd user service on the server |
 | `make clean` | Remove build artifacts |
 
 ## Quick Start
@@ -92,6 +102,18 @@ known_dbs = [
 
 `known_dbs` lists all indexes that `diskindexer search` queries by default. Add a path here to include it in every search automatically.
 
+`default_excludes` lists files and folders that every index run skips, on any disk, from the CLI or the app:
+
+```toml
+default_excludes = [".snapshots", ".addition", ".incomplete", ".stfolder", ".stignore", "lost+found", ".AppleDouble"]
+```
+
+On a server running `diskindexer serve`, restart the service after editing it:
+
+```bash
+systemctl --user restart diskindexer
+```
+
 ## Commands
 
 ### `index`
@@ -100,6 +122,7 @@ Walk a mounted disk and record file metadata.
 
 ```bash
 diskindexer index <mount-path> --disk "Label" [flags]
+diskindexer index --disk "Label" --collection "Label:/path" [flags]   # no mount path
 ```
 
 | Flag | Description |
@@ -107,13 +130,20 @@ diskindexer index <mount-path> --disk "Label" [flags]
 | `--disk` | Disk label (required) |
 | `--description` | Optional description |
 | `--collection "Label:/path"` | Manually specify a collection (repeatable; disables auto-detection) |
-| `--exclude name` | Directory name or glob to skip at any depth (repeatable) |
+| `--exclude name` | File or folder name, or a glob, to skip at any depth (repeatable). Saved with the disk |
+| `--no-default-excludes` | Don't apply the config's `default_excludes` for this run |
 | `--force` | Wipe and re-index from scratch |
 | `--db` | Path to `.diskindex` file |
 
-Collections are auto-detected as top-level directories. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
+Collections are auto-detected as top-level directories. Each `--collection` needs its own name and its own folder; a run that lists either twice is refused, since the collections would overwrite each other in the index. Use `--collection` to override — for example when a collection lives on a different mount point, or to index only a subset of directories.
 
-Use `--exclude` to skip directories by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). Excluded directories and all their contents are omitted from the index.
+Use `--exclude` to skip files and folders by name at any depth. Glob patterns are supported (`*`, `?`, `[range]`). An excluded folder is skipped with everything in it. A file or folder that was indexed before and is now excluded is removed from the index.
+
+Excludes come from two places:
+- **`default_excludes` in the config file** apply to every run.
+- **Each disk's own excludes** are remembered from its last run. A run without `--exclude` reuses them; a run with `--exclude` replaces them. In the app, the Index sheet shows the server's defaults and pre-fills the disk's own list.
+
+The run's output lists everything it skipped.
 
 ```bash
 # Auto-detect collections (top-level dirs become collections)
@@ -131,7 +161,12 @@ diskindexer index /Volumes/Seagate --disk "Seagate 4TB" \
 
 # Force a full re-index
 diskindexer index /Volumes/Seagate --disk "Seagate 4TB" --force
+
+# Add a copy of a collection stored elsewhere to a disk that isn't plugged in
+diskindexer index --disk "Seagate 4TB" --collection "Photos:/srv/copies/Photos"
 ```
+
+The mount path can be left out when `--collection` is given. This is for adding a collection to an existing disk without the disk itself, for example from a copy of the folder kept on a server. Only the listed collections are indexed. Files are stored as if they were on the disk (`Seagate 4TB/Photos/…`), and the disk's other collections and root-level files are left untouched.
 
 Each subsequent `index` run is incremental — only changed, new, or deleted files are processed.
 
@@ -142,6 +177,51 @@ Alias for `index`. Useful in scripts and cron jobs to make the intent explicit.
 ```bash
 diskindexer reindex /Volumes/Seagate --disk "Seagate 4TB"
 ```
+
+### `reindex-collection`
+
+Reindex one collection without walking the rest of its disk. The disk's other collections and its root-level files are left untouched.
+
+```bash
+# From the folder it was last indexed from
+diskindexer reindex-collection --collection "Photos" --disk "Seagate 4TB"
+
+# From a copy, e.g. on a server while the disk itself is unplugged
+diskindexer reindex-collection --collection "Photos" --disk "Seagate 4TB" --from /srv/copies/Photos
+```
+
+| Flag | Description |
+|---|---|
+| `--collection` | Collection label (required) |
+| `--disk` | Disk label, when several disks have a collection with that name |
+| `--from` | Folder to read the collection from instead of its saved location. The index then matches that folder |
+| `--remember-location` | Save `--from` as the collection's location. Without it the collection keeps its saved location, so later reindexes read the real disk again |
+| `--exclude`, `--no-default-excludes` | As for `index` |
+
+### `schedule`
+
+Reindex a disk, or one collection, periodically. Schedules are saved in the index and run by `diskindexer serve`, so they run only while the server does:
+- with the systemd service and linger, around the clock;
+- without linger, only while you're logged in on the server or the app is connected.
+
+A server the app starts just for its connection doesn't run schedules. That includes the app's own **This Mac** server and servers without systemd.
+
+```bash
+# The whole disk, every night at 03:00 (the server's time zone)
+diskindexer schedule add --disk "Seagate 4TB" --path /mnt/seagate --every 1d --at 03:00
+
+# One collection, read from a copy, every 6 hours
+diskindexer schedule add --disk "Seagate 4TB" --collection "Photos" --path /srv/copies/Photos --every 6h
+
+diskindexer schedule list
+diskindexer schedule remove 2
+```
+
+- `--every` takes hours, days or weeks: `6h`, `1d`, `2w`. `--at HH:MM` sets a time of day, for whole-day intervals only. `--disabled` adds the schedule switched off.
+- For a disk, `--path` is its mount path (required). For a collection it's optional and defaults to the collection's saved location. A copy is read like `reindex-collection --from`: the collection keeps its saved location.
+- **A run is skipped, and nothing is removed from the index, when its folder isn't there, is empty, or its disk isn't mounted.** An unplugged disk usually leaves an empty folder at its mount point, and indexing that would remove every file. To tell, the folder must be available when the schedule is added, so the server can note which filesystem it's on.
+- A run that was due while the server was down runs once when it starts. When another index run is using the same index file, the schedule waits for it to finish.
+- Each disk or collection has at most one schedule. Renaming or moving a collection takes its schedule along; deleting a disk or collection deletes its schedules.
 
 ### `search`
 
@@ -206,7 +286,9 @@ diskindexer collections --disk "Seagate 4TB"
 
 ### `rename-collection`
 
-Rename a collection by its label. Use `--disk` to disambiguate if the same collection name exists on more than one disk.
+Rename a collection by its label. Use `--disk` to disambiguate if the same collection name exists on more than one disk. Collection names are unique within a disk, so renaming onto a name the disk already uses is refused.
+
+Older versions could list the same collection more than once when a disk was indexed from a different mount path, for example from a copy. Opening an index with this version merges those entries into the most recently indexed one; no files are lost.
 
 ```bash
 diskindexer rename-collection "Holiday Photos" --collection "Photos"
@@ -221,6 +303,160 @@ Remove a collection and all its files from the index. The actual files on disk a
 diskindexer delete-collection --collection "Photos"
 diskindexer delete-collection --collection "Photos" --disk "Seagate 4TB"
 ```
+
+### `move-collection`
+
+Move a collection and all its files to another disk in the index, after you've physically moved the folder. Nothing is read from either disk, so it takes seconds even for very large collections.
+
+```bash
+diskindexer move-collection --collection "Photos" --disk "Disk One" --to "Seagate PB A"
+```
+
+- Each path's disk name is swapped (`Disk One/Photos/…` becomes `Seagate PB A/Photos/…`); the rest is kept as indexed.
+- The collection's saved folder location moves under the target disk's mount point when it can be worked out, so a later reindex of the target updates the collection instead of re-adding it.
+- Both disks must be in the same index file. The move is refused if the target already has a collection with that name.
+- Reindex the target disk afterwards to pick up any other changes.
+
+### `serve`
+
+Runs the JSON API that the macOS app talks to. You normally don't run this by hand: the app starts its own copy for local use, and `make install-service` sets it up as a service on a server.
+
+```bash
+diskindexer serve                                   # Unix socket at ~/.config/diskindexer/server.sock
+diskindexer serve --listen 127.0.0.1:7878 --token s3cret
+```
+
+| Flag | Description |
+|---|---|
+| `--listen` | `unix:/path/to.sock` or `host:port`; repeatable. Default: `unix:~/.config/diskindexer/server.sock` (mode 0600, so only your user can connect) |
+| `--token` | Require `Authorization: Bearer <token>` on every request (default `$DISKINDEXER_TOKEN`). Required for TCP listeners not on loopback |
+| `--db` | Index file to write to and search; repeatable, as for `search` |
+
+Searches use the indexes in `known_dbs`, and index runs write to `default_db`, the same as the CLI. Index runs happen inside the server, so they keep going if the app disconnects.
+
+## macOS App
+
+`DiskIndexer.app` is a native SwiftUI app with the same features as the TUI:
+- live search;
+- a disk/collection sidebar;
+- sortable columns;
+- duplicate highlighting;
+- a details inspector;
+- column widths and order that are remembered between launches.
+
+It also manages indexes from the GUI:
+- index and reindex disks with live progress through each step (loading, indexing, removing deleted files, folder sizes), Cancel, and a list of anything that couldn't be read;
+- move a collection to another disk by dragging it onto the disk in the sidebar, or with **Move to** in its right-click menu. A move asks for confirmation and can be undone with ⌘Z;
+- add a collection to an existing disk without the disk plugged in (right-click the disk → **Add Collection…**), e.g. from a copy of the folder on the server;
+- reindex a single collection (right-click it → **Reindex…**), from its saved location or another folder such as a copy. **Make this the collection's saved location** is off by default, so the real disk stays its location;
+- schedule reindexing of a disk or collection (right-click it → **Schedule Reindexing…**). The toolbar's **Schedules** button lists schedules with their last result and next run. From there you can turn a schedule on or off, run it now, edit it or delete it. Scheduled runs appear under Jobs, marked "Scheduled". This button only appears on servers that run schedules (see [`schedule`](#schedule));
+- rename and delete collections;
+- delete disks.
+
+The toolbar's connection menu switches between two modes:
+
+- **This Mac.** The app runs its bundled `diskindexer` in the background and uses your normal `~/.config/diskindexer` config and indexes.
+- **A server.** The app connects over SSH to `diskindexer serve` running on another machine, such as an Ubuntu box with your disks attached. You search that machine's indexes and start index runs there; Browse… shows the server's folders.
+
+### Install
+
+Building needs only the Xcode Command Line Tools (`xcode-select --install`), though full Xcode works too.
+
+To install on this Mac:
+
+```bash
+make install-mac
+```
+
+This puts `DiskIndexer.app` in `/Applications` and links the `diskindexer` command bundled inside it to `~/.local/bin/diskindexer`, so the CLI updates whenever the app does. Override the locations with `MAC_APP_DIR` and `MAC_BIN_DIR`. A running copy of the app is quit first.
+
+To make a disk image for another Mac:
+
+```bash
+make dmg
+```
+
+`build/DiskIndexer.dmg` shows the app next to an Applications shortcut to drag it onto. CI builds one for every pull request, and `make release` attaches it to the GitHub release.
+
+The app is ad-hoc signed, not signed with an Apple Developer ID, so a copy **downloaded** from GitHub is blocked the first time. Open it via **System Settings ▸ Privacy & Security ▸ Open Anyway**. A copy you build yourself isn't affected.
+
+### Set up a server
+
+**From the app:**
+1. Choose **Add Server…** in the connection menu and enter its address.
+2. If diskindexer isn't installed there, the "Waiting for …" screen offers **Set Up diskindexer on …**. It copies the right binary over SSH to `~/.local/bin/diskindexer`: Linux amd64 or arm64, or macOS, all bundled in the app.
+   - **On Linux with systemd,** it also installs and starts a systemd user service.
+   - **On other servers** (macOS, or Linux without systemd), there's no service. The app starts `diskindexer serve` over SSH each time it connects, and it exits when the app disconnects.
+
+**Background running (optional).** Without it, the service on a Linux server runs only while you're logged in, and the app's SSH connection counts as being logged in. So diskindexer starts when the app connects and stops shortly after it disconnects. That's fine for searching and short index runs, but a long run stops if your Mac disconnects or sleeps. Files indexed so far are kept.
+
+To let runs finish on their own, enable lingering on the server once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Setup turns this on itself if `sudo` works without a password; otherwise it offers the command. When a server doesn't keep running after the app disconnects, the Index sheet says so before you start a run. Linger also lets schedules run around the clock.
+
+**Updating:** when the server runs an older diskindexer than the app includes, a banner offers **Update…**. It asks first, warns if index runs are in progress (restarting stops them), and then replaces the binary and restarts the service. Your indexes and config aren't touched. The app never downgrades a newer server.
+
+**From a terminal instead:**
+
+1. Install the binary and the systemd user service:
+
+   ```bash
+   make install-service
+   ```
+
+   To install by hand instead, copy `deploy/diskindexer.service` to `~/.config/systemd/user/` and run `systemctl --user enable --now diskindexer`.
+
+2. Once on the server, let the service run while you are logged out:
+
+   ```bash
+   sudo loginctl enable-linger $USER
+   ```
+
+3. In the app, choose **Add Server…** from the connection menu and enter the SSH host. A `~/.ssh/config` alias works.
+
+**Several addresses:** a server can have more than one address, tried in order, for example its home-network IP first and its Tailscale name second. The first one that answers is used, and every reconnect starts again from the top. So the app connects directly at home and over Tailscale elsewhere without you changing anything. The window subtitle shows which address is in use. Addresses that aren't last get a short timeout, so failing over is quick. (Tailscale alone often manages this too: between two machines on the same LAN, it connects them directly.)
+
+How the connection works:
+- The app runs `/usr/bin/ssh` with your ssh-agent and `~/.ssh/config` and forwards a local port to the server's socket. No port is opened on the server. It logs in once per connection and runs everything else over that login (its own ssh control socket), since on a slow link each login costs several round trips.
+- It can't answer password prompts, so `ssh <host>` must log in from Terminal without asking for one.
+- **Host keys:** the first time you connect to an address, the app shows the server's key fingerprint and asks whether to trust it. If an address's key has changed, the app shows the old and new fingerprints:
+  - When the new key is one you already trust for another address of the same server (for example its LAN IP and its hostname), it says so and offers **Replace Key and Connect**.
+  - Otherwise it warns that the connection may be intercepted and asks again before replacing the key.
+  - The app removes only the conflicting line from `~/.ssh/known_hosts` and keeps the previous file as `known_hosts.old`. ssh itself then adds the new key.
+- If the server can't be reached when the app opens, for example because the server is off or Tailscale isn't connected yet, the app shows **Waiting for …** with ssh's error and keeps retrying, with a **Try Now** button. Problems only you can fix, such as an untrusted host key or a refused login, stop and ask instead of retrying.
+- If the connection drops, for example when the Mac sleeps, the app reconnects on its own. Meanwhile, the last results stay visible but dimmed under a "Reconnecting…" banner, and your search runs once it's back.
+  - When the Mac's network changes (Wi-Fi, a hotspot, a VPN), the app checks the connection straight away. Over Tailscale it usually survives, since the server's address doesn't change. Otherwise the app reconnects at once, and a pending retry happens immediately instead of waiting.
+  - A link that goes quiet without the network changing is given up on after about 30 seconds.
+
+How the app copes with slow connections:
+- **Starts from last time.** Each connection's sidebar and default results are saved, so the next launch shows them at once, dimmed, with a "Connecting…" or "Waiting for…" banner. Typing searches those saved results until the server answers.
+- **Answers locally first.** When you type more, or pick a disk, collection or type, the app first narrows the results it already has, then replaces them with the server's answer.
+- **Fewer round trips.** After the first request, the sidebar, jobs, schedules and the search are fetched at the same time, and search results are sent gzip-compressed.
+- **Patient timeouts.** On a high-latency link (over 0.25 s per round trip), request timeouts grow with the measured latency, so slow requests aren't abandoned.
+- The app logs how long each connection step took. See them with `log show --last 1h --predicate 'subsystem == "com.virajchitnis.diskindexer"'`.
+- Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
+
+## Testing
+
+- **Go:** `make test`, with tests for the indexer, database, server, CLI commands and TUI. `make coverage-go` fails if coverage across all packages drops below 80%.
+- **macOS app logic:** `make test-apple` runs the Swift tests. Many of them drive the app's model against a real `diskindexer serve`. `make coverage-apple` gates that logic at 80%.
+- **End-to-end UI tests:** `apple/UITests` uses XCUITest to drive the real app: browsing, search and filters, indexing a disk, renaming, drag-to-move with undo, the name-clash alert, and the can't-connect screen. They need full Xcode and run in CI. To run them locally:
+
+  ```bash
+  brew install xcodegen
+  ```
+  ```bash
+  make build && (cd apple/Xcode && xcodegen generate)
+  ```
+  ```bash
+  TEST_RUNNER_DISKINDEXER_BIN="$PWD/diskindexer" xcodebuild test -project apple/Xcode/DiskIndexer.xcodeproj -scheme DiskIndexer -destination 'platform=macOS'
+  ```
+
+CI runs all of these on every pull request.
 
 ## TUI Controls
 
@@ -253,8 +489,9 @@ File paths in the index are stored as `DiskLabel/Collection/path/to/file`. This 
 - **Index format** — `.diskindex` files are standard SQLite databases. They can be opened with any SQLite tool.
 - **FTS5** — a full-text search virtual table on `(name, path)` powers fast text queries.
 - **Incremental detection** — files are compared by `(path, size, mtime)`. No hashing. A 5 TB disk with unchanged files reindexes in seconds.
+- **Unreadable folders** — if a folder can't be read (permissions, a failing drive), the run still completes. It reports the paths it couldn't read: at the end of CLI output, and in the app's Jobs list. Whatever was indexed under those folders before is **kept** rather than removed, because an error doesn't mean the files are gone. The next readable run brings them up to date.
 - **Directory sizes** — computed at the end of every index or reindex run by summing all non-directory file sizes beneath each directory. Re-indexing an existing disk populates sizes for directories that were previously recorded with a size of 0.
-- **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection.
+- **Collections** — top-level directories on a disk. Files at the disk root (not inside any directory) are indexed without a collection. When indexing, a collection is matched by its folder location or, failing that, by name on the same disk. A collection moved from another disk, or first indexed from a copy elsewhere, is therefore updated in place rather than duplicated.
 - **Multi-DB search** — each `.diskindex` is queried independently; results are merged and sorted in memory.
 - **Duplicate highlighting** — the TUI marks files and directories that share the same name and size (across all indexed disks) in amber.
 

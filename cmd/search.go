@@ -184,17 +184,20 @@ func runTextSearch(dbs []*db.DB, query string) error {
 		}
 	}
 	if searchAfter != "" {
-		params.ModAfter, err = time.Parse("2006-01-02", searchAfter)
+		// Dates are local: --before 2026-11-01 means the end of that day here.
+		params.ModAfter, err = time.ParseInLocation("2006-01-02", searchAfter, time.Local)
 		if err != nil {
 			return fmt.Errorf("--after: expected YYYY-MM-DD, got %q", searchAfter)
 		}
 	}
 	if searchBefore != "" {
-		params.ModBefore, err = time.Parse("2006-01-02", searchBefore)
+		params.ModBefore, err = time.ParseInLocation("2006-01-02", searchBefore, time.Local)
 		if err != nil {
 			return fmt.Errorf("--before: expected YYYY-MM-DD, got %q", searchBefore)
 		}
-		params.ModBefore = params.ModBefore.Add(24*time.Hour - time.Second)
+		// End of that day: the next midnight minus a second. Not +24h, which
+		// falls short on a 25-hour day when daylight saving time ends.
+		params.ModBefore = params.ModBefore.AddDate(0, 0, 1).Add(-time.Second)
 	}
 
 	if params.MinSize > 0 && params.MaxSize > 0 && params.MinSize > params.MaxSize {

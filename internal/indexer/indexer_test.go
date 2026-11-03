@@ -1,6 +1,9 @@
 package indexer_test
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/viraj/diskindexer/internal/db"
 	"github.com/viraj/diskindexer/internal/indexer"
+	_ "modernc.org/sqlite"
 )
 
 func openTestDB(t *testing.T) *db.DB {
@@ -390,4 +394,381 @@ func TestParseCollectionSpec(t *testing.T) {
 			assert.Equal(t, tc.path, spec.RootPath)
 		}
 	}
+}
+
+func TestRunContext_Cancelled(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg": "a",
+		"Photos/b.jpg": "b",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := indexer.RunContext(ctx, d, indexer.Options{DiskLabel: "Test Disk", MountPath: root})
+	require.ErrorIs(t, err, context.Canceled)
+
+	files, err := d.Search(db.SearchParams{Query: "jpg"})
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// Adding a copy of a collection that lives elsewhere to a disk that isn't
+// plugged in: no mount path, so the disk's root files and other collections
+// must survive.
+func TestRun_AddCollectionWithoutMountPath(t *testing.T) {
+	d := openTestDB(t)
+	disk := makeDisk(t, map[string]string{
+		"readme.txt":      "root file",
+		"Photos/a.jpg":    "a",
+		"Videos/clip.mp4": "clip",
+	})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "Test Disk", MountPath: disk})
+	require.NoError(t, err)
+
+	copyRoot := makeDisk(t, map[string]string{
+		"Music/song.flac": "song",
+		"loose.txt":       "not part of the disk",
+	})
+	stats, err := indexer.Run(d, indexer.Options{
+		DiskLabel:   "Test Disk",
+		Collections: []indexer.CollectionSpec{{Label: "Music", RootPath: filepath.Join(copyRoot, "Music")}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, stats.Deleted)
+
+	fileMap, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	for _, p := range []string{
+		"Test Disk/readme.txt",
+		"Test Disk/Photos/a.jpg",
+		"Test Disk/Videos/clip.mp4",
+		"Test Disk/Music/song.flac",
+	} {
+		assert.Contains(t, fileMap, p)
+	}
+	assert.NotContains(t, fileMap, "Test Disk/loose.txt")
+
+	colls, err := d.ListCollections(1)
+	require.NoError(t, err)
+	assert.Len(t, colls, 3)
+}
+
+func TestRun_NoMountPathNoCollections(t *testing.T) {
+	d := openTestDB(t)
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "Test Disk"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mount path is required")
+	disks, err := d.ListDisks()
+	require.NoError(t, err)
+	assert.Empty(t, disks, "a rejected run must not create the disk")
+}
+
+// Move a collection to another disk in the index, then reindex that disk
+// from its real mount: the moved collection is updated in place, not
+// duplicated, and nothing is re-added.
+func TestRun_ReindexAfterMoveDoesNotDuplicate(t *testing.T) {
+	d := openTestDB(t)
+	diskA := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Photos/b.jpg": "b"})
+	diskB := makeDisk(t, map[string]string{"Music/song.flac": "s"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: diskA})
+	require.NoError(t, err)
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "B", MountPath: diskB})
+	require.NoError(t, err)
+
+	// The folder physically moves from A to B...
+	require.NoError(t, os.Rename(filepath.Join(diskA, "Photos"), filepath.Join(diskB, "Photos")))
+	// ...and is moved in the index without reading it again.
+	photos, err := d.GetCollectionsByLabel("Photos", "A")
+	require.NoError(t, err)
+	b, err := d.GetDiskByLabel("B")
+	require.NoError(t, err)
+	_, err = d.MoveCollection(photos[0].ID, b.ID)
+	require.NoError(t, err)
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "B", MountPath: diskB})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	colls, err := d.ListCollections(b.ID)
+	require.NoError(t, err)
+	assert.Len(t, colls, 2)
+}
+
+// Two manual collections with the same name would share "<disk>/<label>/..."
+// paths and overwrite each other in the index, so the run is refused before
+// anything is written.
+func TestRun_RejectsDuplicateCollections(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"x/same.txt": "1", "y/same.txt": "22"})
+	x, y := filepath.Join(root, "x"), filepath.Join(root, "y")
+
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", Collections: []indexer.CollectionSpec{
+		{Label: "A", RootPath: x}, {Label: "A", RootPath: y},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `collection "A" is listed twice`)
+
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", Collections: []indexer.CollectionSpec{
+		{Label: "A", RootPath: x}, {Label: "B", RootPath: x + "/"},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is listed twice")
+
+	disks, err := d.ListDisks()
+	require.NoError(t, err)
+	assert.Empty(t, disks, "nothing is written for a rejected run")
+}
+
+// A folder that can't be read is reported, and what was indexed under it
+// before is kept: an I/O or permission error doesn't mean the files are gone.
+func TestRun_UnreadableFolderIsReportedAndKept(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read anything")
+	}
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/ok.jpg":          "ok",
+		"Photos/locked/a.jpg":    "a",
+		"Photos/locked/sub/b.jp": "b",
+	})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	locked := filepath.Join(root, "Photos", "locked")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.ErrorCount)
+	require.Len(t, stats.Errors, 1)
+	assert.Equal(t, locked, stats.Errors[0].Path)
+	assert.Contains(t, stats.Errors[0].Err, "permission denied")
+	assert.Zero(t, stats.Deleted, "nothing under the unreadable folder is treated as deleted")
+
+	files, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/locked/a.jpg")
+	assert.Contains(t, files, "D/Photos/locked/sub/b.jp")
+
+	// Once readable again, a real deletion inside it is picked up.
+	require.NoError(t, os.Chmod(locked, 0o755))
+	require.NoError(t, os.Remove(filepath.Join(locked, "a.jpg")))
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+	assert.Zero(t, stats.ErrorCount)
+	assert.Equal(t, 1, stats.Deleted)
+}
+
+func TestRun_ReportsEveryPhase(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "root.txt": "r"})
+	var phases []string
+	_, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "D", MountPath: root, Force: true,
+		ProgressFn: func(u indexer.ProgressUpdate) {
+			if len(phases) == 0 || phases[len(phases)-1] != u.Phase {
+				phases = append(phases, u.Phase)
+			}
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"clearing", "loading", "indexing", "root", "deleting", "sizes"}, phases)
+}
+
+// An incremental run over unchanged files used to report nothing until the
+// end of each collection; progress now arrives as files are walked.
+func TestRun_ProgressDuringUnchangedFiles(t *testing.T) {
+	defer indexer.SetProgressInterval(0)()
+	d := openTestDB(t)
+	files := map[string]string{}
+	for i := 0; i < 50; i++ {
+		files[filepath.Join("Photos", fmt.Sprintf("f%02d.jpg", i))] = "x"
+	}
+	root := makeDisk(t, files)
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	var skippedSeen []int
+	stats, err := indexer.Run(d, indexer.Options{
+		DiskLabel: "D", MountPath: root,
+		ProgressFn: func(u indexer.ProgressUpdate) {
+			if u.Phase == "indexing" {
+				skippedSeen = append(skippedSeen, u.Skipped)
+			}
+		},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added+stats.Updated)
+	assert.Greater(t, len(skippedSeen), 40, "a report per unchanged file when unthrottled")
+	assert.Equal(t, stats.Skipped, skippedSeen[len(skippedSeen)-1])
+}
+
+// Excludes match files as well as folders (e.g. Syncthing's .stignore file).
+func TestRun_ExcludesMatchFiles(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg":       "a",
+		"Photos/.stignore":   "ignore me",
+		"Photos/sub/x.tmp":   "tmp",
+		"Photos/.stfolder/f": "marker",
+		"root.tmp":           "root-level file",
+		"root.txt":           "kept",
+	})
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root,
+		Excludes: []string{".stignore", "*.tmp", ".stfolder"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{".stignore", "*.tmp", ".stfolder"}, stats.Excludes)
+
+	files, err := d.GetFileMapForDisk(1)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/a.jpg")
+	assert.Contains(t, files, "D/root.txt")
+	for _, p := range []string{"D/Photos/.stignore", "D/Photos/sub/x.tmp", "D/Photos/.stfolder", "D/Photos/.stfolder/f", "D/root.tmp"} {
+		assert.NotContains(t, files, p)
+	}
+}
+
+// A newly excluded file that was indexed before is removed from the index.
+func TestRun_NewlyExcludedFileIsRemoved(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Photos/.stignore": "x"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root})
+	require.NoError(t, err)
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{".stignore"}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Deleted)
+}
+
+// Each disk remembers its excludes; a run without any reuses them, a run
+// with some replaces them, and defaults always apply without being saved.
+func TestRun_DiskRemembersExcludes(t *testing.T) {
+	d := openTestDB(t)
+	root := makeDisk(t, map[string]string{
+		"Photos/a.jpg":           "a",
+		"Photos/.snapshots/s.jpg": "s",
+		"Photos/cache/c.jpg":     "c",
+		"Photos/lost+found/l":    "l",
+	})
+	defaults := []string{"lost+found"}
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root,
+		Excludes: []string{".snapshots"}, DefaultExcludes: defaults})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"lost+found", ".snapshots"}, stats.Excludes)
+
+	disk, err := d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Equal(t, []string{".snapshots"}, disk.Excludes, "defaults aren't saved with the disk")
+
+	// nil Excludes: reuse the saved ones.
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, DefaultExcludes: defaults})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"lost+found", ".snapshots"}, stats.Excludes)
+	files, err := d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	assert.NotContains(t, files, "D/Photos/.snapshots")
+	assert.NotContains(t, files, "D/Photos/lost+found")
+
+	// Given excludes replace the saved ones.
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{"cache"}})
+	require.NoError(t, err)
+	disk, err = d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cache"}, disk.Excludes)
+	files, err = d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	assert.Contains(t, files, "D/Photos/.snapshots/s.jpg", "no longer excluded")
+	assert.NotContains(t, files, "D/Photos/cache/c.jpg")
+
+	// An empty, non-nil list clears them.
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "D", MountPath: root, Excludes: []string{}})
+	require.NoError(t, err)
+	disk, err = d.GetDiskByLabel("D")
+	require.NoError(t, err)
+	assert.Empty(t, disk.Excludes)
+}
+
+// A file whose row points at another collection (left over from older
+// versions) moves to the collection it's found in, even though it hasn't
+// changed and would otherwise be skipped.
+func TestRun_UnchangedFileFollowsItsCollection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.diskindex")
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+	mount := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "root.txt": "r"})
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+
+	disk, err := d.GetDiskByLabel("A")
+	require.NoError(t, err)
+	colls, err := d.ListCollections(disk.ID)
+	require.NoError(t, err)
+	require.Len(t, colls, 1)
+	photos := colls[0].ID
+
+	// Swap them: the collection's file loses its collection, and the root
+	// file is attached to the collection.
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = raw.Exec(`UPDATE files SET collection_id = CASE WHEN collection_id IS NULL THEN ? ELSE NULL END`, photos)
+	require.NoError(t, err)
+	raw.Close()
+
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	files, err := d.GetFileMapForDisk(disk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, files["A/Photos/a.jpg"].CollectionID)
+	assert.Equal(t, photos, *files["A/Photos/a.jpg"].CollectionID)
+	assert.Nil(t, files["A/root.txt"].CollectionID)
+
+	// Once fixed, a further run skips them again.
+	stats, err = indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: mount})
+	require.NoError(t, err)
+	assert.Zero(t, stats.Updated)
+}
+
+// Reindexing one collection from a copy (the disk is unplugged) updates its
+// files but keeps the location saved for it, and leaves the disk's other
+// collections alone. Without KeepRootPath the copy becomes its location.
+func TestRun_CollectionFromCopyKeepsLocation(t *testing.T) {
+	d := openTestDB(t)
+	disk := makeDisk(t, map[string]string{"Photos/a.jpg": "a", "Music/s.flac": "s"})
+	_, err := indexer.Run(d, indexer.Options{DiskLabel: "A", MountPath: disk})
+	require.NoError(t, err)
+
+	cp := makeDisk(t, map[string]string{"a.jpg": "a", "new.jpg": "n"})
+	stats, err := indexer.Run(d, indexer.Options{DiskLabel: "A",
+		Collections: []indexer.CollectionSpec{{Label: "Photos", RootPath: cp, KeepRootPath: true}}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Added)
+	assert.Zero(t, stats.Deleted)
+
+	a, err := d.GetDiskByLabel("A")
+	require.NoError(t, err)
+	photos, err := d.GetCollectionByLabel(a.ID, "Photos")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(disk, "Photos"), photos.RootPath)
+	colls, err := d.ListCollections(a.ID)
+	require.NoError(t, err)
+	assert.Len(t, colls, 2)
+	files, err := d.GetFileMapForDisk(a.ID)
+	require.NoError(t, err)
+	assert.Contains(t, files, "A/Photos/new.jpg")
+	assert.Contains(t, files, "A/Music/s.flac")
+
+	_, err = indexer.Run(d, indexer.Options{DiskLabel: "A",
+		Collections: []indexer.CollectionSpec{{Label: "Photos", RootPath: cp}}})
+	require.NoError(t, err)
+	photos, err = d.GetCollectionByLabel(a.ID, "Photos")
+	require.NoError(t, err)
+	assert.Equal(t, cp, photos.RootPath)
 }

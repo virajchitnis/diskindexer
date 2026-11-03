@@ -133,21 +133,17 @@ func (m progressModel) View() string {
 			pLabel.Render("Deleted: ") + pNum.Render(fmt.Sprintf("%d", m.stats.Deleted)) + "  " +
 			pLabel.Render("Unchanged: ") + pNum.Render(fmt.Sprintf("%d", m.stats.Skipped)))
 		b.WriteByte('\n')
+		if len(m.stats.Excludes) > 0 {
+			b.WriteString("   " + pLabel.Render("Skipped anything named: ") + strings.Join(m.stats.Excludes, ", ") + "\n")
+		}
+		b.WriteString(formatPathErrors(m.stats, func(s string) string { return pFail.Render(s) }))
 		return b.String()
 	}
 
 	elapsed := time.Since(m.startTime).Round(time.Second)
 
 	// Phase label
-	var phaseStr string
-	switch m.update.Phase {
-	case "clearing":
-		phaseStr = "Clearing existing index…"
-	case "sizes":
-		phaseStr = "Computing directory sizes…"
-	default:
-		phaseStr = "Indexing"
-	}
+	phaseStr := phaseLabel(m.update.Phase)
 
 	// Line 1: spinner + disk label + phase
 	b.WriteString(m.spinner.View() + "  " + pBold.Render(m.diskLabel) +
@@ -163,7 +159,13 @@ func (m progressModel) View() string {
 	b.WriteByte('\n')
 
 	// Line 3: phase-specific progress details
-	if m.update.Phase == "sizes" {
+	switch m.update.Phase {
+	case "loading", "clearing", "root":
+		b.WriteString("   " + pLabel.Render("Elapsed: ") + elapsed.String())
+	case "deleting":
+		b.WriteString("   " + pNum.Render(fmt.Sprintf("%d", m.update.Deleting)) +
+			pLabel.Render(" files no longer on disk  Elapsed: ") + elapsed.String())
+	case "sizes":
 		dirsTotal := m.update.DirsTotal
 		dirsDone := m.update.DirsDone
 		if dirsTotal > 0 {
@@ -178,7 +180,7 @@ func (m progressModel) View() string {
 		} else {
 			b.WriteString("   " + pLabel.Render("scanning…  Elapsed: ") + elapsed.String())
 		}
-	} else {
+	default:
 		// Indexing / clearing phase.
 		processed := m.update.Added + m.update.Updated + m.update.Skipped
 		total := m.update.Total
@@ -208,6 +210,47 @@ func (m progressModel) View() string {
 		b.WriteString("   " + strings.Join(parts, pLabel.Render("  ")))
 	}
 	b.WriteByte('\n')
+	if m.update.Errors > 0 {
+		b.WriteString("   " + pFail.Render(fmt.Sprintf("%d unreadable (listed when done)", m.update.Errors)) + "\n")
+	}
 
+	return b.String()
+}
+
+func phaseLabel(phase string) string {
+	switch phase {
+	case "loading":
+		return "Loading existing index…"
+	case "clearing":
+		return "Clearing existing index…"
+	case "root":
+		return "Indexing files at the top of the disk…"
+	case "deleting":
+		return "Removing files no longer on disk…"
+	case "sizes":
+		return "Computing directory sizes…"
+	default:
+		return "Indexing"
+	}
+}
+
+// formatPathErrors lists the paths a run couldn't read, or "" if none. warn
+// styles the heading.
+func formatPathErrors(stats *indexer.Stats, warn func(string) string) string {
+	if stats == nil || stats.ErrorCount == 0 {
+		return ""
+	}
+	var b strings.Builder
+	noun := "path"
+	if stats.ErrorCount != 1 {
+		noun = "paths"
+	}
+	b.WriteString("   " + warn(fmt.Sprintf("Couldn't read %d %s; what was indexed there before was kept:", stats.ErrorCount, noun)) + "\n")
+	for _, e := range stats.Errors {
+		b.WriteString("     " + e.Path + ": " + e.Err + "\n")
+	}
+	if more := stats.ErrorCount - len(stats.Errors); more > 0 {
+		b.WriteString(fmt.Sprintf("     … and %d more\n", more))
+	}
 	return b.String()
 }

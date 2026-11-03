@@ -1,0 +1,16 @@
+# systemd user unit for the diskindexer API used by the DiskIndexer apps.
+# Install with `make install-service`, or manually:
+#   cp diskindexer.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now diskindexer
+#   sudo loginctl enable-linger $USER   # keep it running while logged out
+[Unit]
+Description=diskindexer API server
+After=default.target
+
+[Service]
+ExecStart=%h/.local/bin/diskindexer serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
