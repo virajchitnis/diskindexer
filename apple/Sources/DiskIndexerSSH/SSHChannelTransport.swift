@@ -24,10 +24,16 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
     let addresses: [SSHAddress]
     let key: Curve25519.Signing.PrivateKey
     let hostKeys: HostKeyStore
-    /// Shell command that relays stdin/stdout to the server; see relayCommand.
-    let command: String
+    let socketPath: String?
+    /// The diskindexer to run on the server, instead of the one the lookup
+    /// finds (tests point it at the build under test).
+    let binary: String?
+    /// Seconds an on-demand server waits, with nothing to do, before exiting.
+    /// The app's connection may simply vanish (iOS suspends apps), and sshd
+    /// then leaves the server running.
+    let onDemandIdleExit: Int
 
-    /// Seconds spent in each step of the last connect(), for the spike.
+    /// Seconds spent in each step of the last connect().
     public private(set) var timings: [String: TimeInterval] = [:]
 
     private let lock = NSLock()
@@ -35,33 +41,28 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
     private var listener: NWListener?
     private var active: SSHAddress?
     private var stopping = false
+    /// The relay command for this connection (see relayCommand).
+    private var relay = ""
+    /// An on-demand server's session; cancelling it closes the channel, and
+    /// `serve --stdin-watch` exits with its stdin.
+    private var session: Task<Void, Never>?
     private let queue = DispatchQueue(label: "diskindexer.ssh.bridge")
 
     public init(name: String, addresses: [SSHAddress], key: Curve25519.Signing.PrivateKey,
-                hostKeys: HostKeyStore, socketPath: String? = nil, command: String? = nil) {
+                hostKeys: HostKeyStore, socketPath: String? = nil, binary: String? = nil,
+                onDemandIdleExit: Int = 600) {
         displayName = name
         self.addresses = addresses
         self.key = key
         self.hostKeys = hostKeys
-        self.command = command ?? Self.relayCommand(socketPath: socketPath)
+        self.socketPath = socketPath
+        self.binary = binary
+        self.onDemandIdleExit = onDemandIdleExit
     }
 
-    /// Runs `diskindexer connect` from ~/.local/bin or PATH, through sh so it
-    /// works whatever the login shell. Exit 4: not installed; 3: not running.
-    /// Citadel doesn't always report the exit status, so probe() also reads
-    /// what they print.
-    public static func relayCommand(socketPath: String?) -> String {
-        let socket = socketPath.flatMap { $0.isEmpty ? nil : " --socket " + shellQuote($0) } ?? ""
-        let script = """
-            b="$HOME/.local/bin/diskindexer"; [ -x "$b" ] || b=$(command -v diskindexer) || \
-            { echo "diskindexer: not installed" >&2; exit 4; }; \
-            exec "$b" connect\(socket)
-            """
-        return "sh -c " + shellQuote(script)
-    }
-
-    static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    /// `diskindexer connect` for the server the lookup found.
+    static func relayCommand(binary: String, socket: String) -> String {
+        "\(ServerLookup.shellQuote(binary)) connect --socket \(ServerLookup.shellQuote(socket))"
     }
 
     public func connect() async throws -> Endpoint {
@@ -82,14 +83,40 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
             self.onDisconnect?("The SSH connection to \(self.displayName) closed.")
         }
 
-        started = Date()
         do {
-            try await probe(client)
+            started = Date()
+            var found = try await lookup(client)
+            if let binary { found.binary = binary }
+            timings["find"] = Date().timeIntervalSince(started)
+            lock.withLock { relay = Self.relayCommand(binary: found.binary ?? "diskindexer", socket: found.socket) }
+
+            started = Date()
+            var onDemand = found.onDemand
+            if onDemand { startSession(client, ServerLookup.onDemandCommand(found, idleExit: onDemandIdleExit)) }
+            // An on-demand server needs a moment to create its socket.
+            var deadline = Date().addingTimeInterval(onDemand ? 15 : 0)
+            while true {
+                do {
+                    try await probe(client)
+                    break
+                } catch let f as ConnectionFailure where f.reason == .notRunning {
+                    if !onDemand, found.binary != nil, !found.socket.isEmpty {
+                        // A socket with nothing behind it, left by a server
+                        // that was killed. serve replaces it.
+                        onDemand = true
+                        startSession(client, ServerLookup.onDemandCommand(found, idleExit: onDemandIdleExit))
+                        deadline = Date().addingTimeInterval(15)
+                    } else if Date() >= deadline {
+                        throw f
+                    }
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
+            timings["probe"] = Date().timeIntervalSince(started)
         } catch {
             disconnect()
             throw error
         }
-        timings["probe"] = Date().timeIntervalSince(started)
 
         started = Date()
         let port = try await startListener()
@@ -98,12 +125,13 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
     }
 
     public func disconnect() {
-        let (client, listener) = lock.withLock {
+        let (client, listener, session) = lock.withLock {
             stopping = true
-            defer { self.client = nil; self.listener = nil }
-            return (self.client, self.listener)
+            defer { self.client = nil; self.listener = nil; self.session = nil }
+            return (self.client, self.listener, self.session)
         }
         listener?.cancel()
+        session?.cancel()
         if let client { Task { try? await client.close() } }
     }
 
@@ -147,42 +175,60 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
 
     // MARK: Relay
 
-    /// One request through a relay, so a missing server is reported here
-    /// with a clear message rather than as a failed HTTP request.
-    private func probe(_ client: SSHClient) async throws {
-        let request = "GET /v1/info HTTP/1.1\r\nHost: diskindexer\r\nConnection: close\r\n\r\n"
-        var reply = ""
-        var errors = ""
+    /// Runs ServerLookup's script over the connection.
+    private func lookup(_ client: SSHClient) async throws -> ServerLookup.Found {
+        let (out, err) = try await run(client, try ServerLookup.command(socketPath: socketPath))
+        return try ServerLookup.parse(out, stderr: err, serverName: displayName)
+    }
+
+    /// Runs command, sending input, and returns what it printed. Its exit
+    /// status isn't used: Citadel doesn't always report it.
+    private func run(_ client: SSHClient, _ command: String, input: String? = nil) async throws -> (String, String) {
+        var out = ""
+        var err = ""
         do {
             try await client.withExec(command) { inbound, outbound in
-                try await outbound.write(ByteBuffer(string: request))
-                for try await out in inbound {
-                    switch out {
-                    case .stdout(let b): reply += String(buffer: b)
-                    case .stderr(let b): errors += String(buffer: b)
+                if let input { try await outbound.write(ByteBuffer(string: input)) }
+                for try await chunk in inbound {
+                    switch chunk {
+                    case .stdout(let b): out += String(buffer: b)
+                    case .stderr(let b): err += String(buffer: b)
                     }
                 }
             }
         } catch ChannelError.alreadyClosed {
             // withExec closes the channel itself once perform returns, and
-            // fails if the command already ended it, as it does here.
-        } catch let e as SSHClient.CommandFailed where e.exitCode == 3 || e.exitCode == 4 {
-            throw ConnectionFailure(e.exitCode == 4
-                ? "diskindexer isn\u{2019}t installed on \(displayName)."
-                : "diskindexer isn\u{2019}t running on \(displayName).",
-                isTransient: true, reason: .notRunning)
-        } catch let e as SSHClient.CommandFailed {
-            throw ConnectionFailure("diskindexer connect failed on \(displayName) (exit \(e.exitCode)): \(errors)", isTransient: true)
+            // fails if the command already ended it, as it usually has.
+        } catch is SSHClient.CommandFailed {
+            // Judged by its output instead.
         }
-        if reply.isEmpty, errors.contains("diskindexer: not installed") || errors.contains("no server is running") {
-            throw ConnectionFailure(errors.contains("not installed")
-                ? "diskindexer isn\u{2019}t installed on \(displayName)."
-                : "diskindexer isn\u{2019}t running on \(displayName).",
-                isTransient: true, reason: .notRunning)
+        return (out, err)
+    }
+
+    /// One request through the relay, so a missing server is reported here
+    /// with a clear message rather than as a failed HTTP request.
+    private func probe(_ client: SSHClient) async throws {
+        let request = "GET /v1/info HTTP/1.1\r\nHost: diskindexer\r\nConnection: close\r\n\r\n"
+        let (reply, errors) = try await run(client, lock.withLock { relay }, input: request)
+        if reply.isEmpty, errors.contains("no server is running") {
+            throw ConnectionFailure("diskindexer isn\u{2019}t running on \(displayName).", isTransient: true, reason: .notRunning)
         }
         guard reply.hasPrefix("HTTP/1.1 200") else {
             throw ConnectionFailure("Unexpected reply from \(displayName): \(reply.prefix(200))\(errors)", isTransient: true)
         }
+    }
+
+    /// Starts `serve --stdin-watch` on its own channel and holds it open.
+    private func startSession(_ client: SSHClient, _ command: String) {
+        let task = Task { [weak self] in
+            try? await client.withExec(command) { inbound, _ in
+                // Lasts until the server exits or the task is cancelled.
+                for try await _ in inbound {}
+            }
+            guard let self, !Task.isCancelled, !self.lock.withLock({ self.stopping }) else { return }
+            self.onDisconnect?("diskindexer on \(self.displayName) stopped.")
+        }
+        lock.withLock { session = task }
     }
 
     private func startListener() async throws -> UInt16 {
@@ -215,8 +261,7 @@ public final class SSHChannelTransport: Transport, HostKeyTrusting, @unchecked S
         let id = UInt16.random(in: 0...9999)
         trace.debug("bridge \(id) accept")
         conn.start(queue: queue)
-        guard let client = lock.withLock({ self.client }) else { return conn.cancel() }
-        let command = self.command
+        guard let (client, command) = lock.withLock({ self.client.map { ($0, relay) } }) else { return conn.cancel() }
         Task {
             try? await client.withExec(command) { inbound, outbound in
                 trace.debug("bridge \(id) exec ready at \(Date().timeIntervalSince(opened), format: .fixed(precision: 3))")

@@ -50,13 +50,28 @@ public final class APIClient: Sendable {
         // Ordinary requests: a dead server or tunnel should surface quickly.
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Self.requestTimeout(latency: latency)
+        config.httpMaximumConnectionsPerHost = Self.maxConnections
         session = URLSession(configuration: config)
         // Progress streams stay open for the whole run and can go quiet during
         // long phases; if one idles out, AppModel re-attaches.
         let events = URLSessionConfiguration.ephemeral
         events.timeoutIntervalForRequest = 120 + 20 * latency
         events.timeoutIntervalForResource = 7 * 24 * 3600
+        events.httpMaximumConnectionsPerHost = Self.maxStreams
         eventsSession = URLSession(configuration: events)
+    }
+
+    /// Over SSH on iOS each HTTP connection holds an SSH session, and OpenSSH
+    /// allows 10 per login (MaxSessions); an on-demand server takes one more.
+    static let maxConnections = 4
+    static let maxStreams = 3
+
+    deinit {
+        // Close idle connections now rather than when they time out: AppModel
+        // replaces its client on every connect, and over SSH each open
+        // connection holds a session.
+        session.finishTasksAndInvalidate()
+        eventsSession.finishTasksAndInvalidate()
     }
 
     // MARK: Endpoints

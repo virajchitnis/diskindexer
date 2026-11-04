@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ var (
 	serveListen     []string
 	serveToken      string
 	serveStdinWatch bool
+	serveIdleExit   time.Duration
 )
 
 var serveCmd = &cobra.Command{
@@ -58,6 +60,9 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveStdinWatch, "stdin-watch", false,
 		"exit when stdin closes (used by the macOS app so the server dies with it)")
 	_ = serveCmd.Flags().MarkHidden("stdin-watch")
+	serveCmd.Flags().DurationVar(&serveIdleExit, "idle-exit", 0,
+		"exit after this long with no requests in flight and no index job running (used by the iOS app)")
+	_ = serveCmd.Flags().MarkHidden("idle-exit")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -68,6 +73,10 @@ func defaultSocketPath() string {
 
 func runServe(_ *cobra.Command, _ []string) error {
 	log.SetOutput(os.Stderr)
+	// Started over SSH, stdout and stderr are the session, which may be gone
+	// by the time the server logs that it's stopping. Go would then exit on
+	// SIGPIPE, leaving its socket file behind.
+	signal.Ignore(syscall.SIGPIPE)
 	token := serveToken
 	if token == "" {
 		token = os.Getenv("DISKINDEXER_TOKEN")
@@ -102,7 +111,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	svc.Persistent = persistence(serveStdinWatch)
 	defer svc.Close()
 
-	srv := &http.Server{Handler: server.New(svc, token), ReadHeaderTimeout: 10 * time.Second}
+	idle := newIdleWatch()
+	srv := &http.Server{Handler: idle.wrap(server.New(svc, token)), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, len(listeners))
 	for _, l := range listeners {
 		line, _ := json.Marshal(map[string]string{"listen": listenerAddr(l)})
@@ -118,6 +128,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 	if !serveStdinWatch {
 		svc.Scheduler = true
 		go svc.RunScheduler(ctx, scheduleTick)
+	}
+	if serveIdleExit > 0 {
+		// A server started over SSH for one app can't rely on stdin closing:
+		// sshd leaves it running when the connection just drops, as it does
+		// when iOS suspends the app.
+		go idle.exitWhenIdle(ctx, serveIdleExit, min(serveIdleExit/4, 30*time.Second), svc.Busy, stop)
 	}
 	if serveStdinWatch {
 		go func() {
@@ -141,6 +157,63 @@ func runServe(_ *cobra.Command, _ []string) error {
 		srv.Close()
 	}
 	return nil
+}
+
+// idleWatch tracks requests in flight and when the last one ended.
+type idleWatch struct {
+	mu     sync.Mutex
+	active int
+	last   time.Time
+}
+
+func newIdleWatch() *idleWatch { return &idleWatch{last: time.Now()} }
+
+func (w *idleWatch) wrap(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		w.mu.Lock()
+		w.active++
+		w.mu.Unlock()
+		defer func() {
+			w.mu.Lock()
+			w.active--
+			w.last = time.Now()
+			w.mu.Unlock()
+		}()
+		h.ServeHTTP(rw, r)
+	})
+}
+
+// idleFor is how long no request has been in flight, as of now.
+func (w *idleWatch) idleFor(now time.Time) time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.active > 0 {
+		return 0
+	}
+	return now.Sub(w.last)
+}
+
+// exitWhenIdle calls stop once the server has been idle for d, checking
+// every tick, unless busy (an index job is running).
+func (w *idleWatch) exitWhenIdle(ctx context.Context, d, tick time.Duration, busy func() bool, stop func()) {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if busy() {
+				w.mu.Lock()
+				w.last = now
+				w.mu.Unlock()
+			} else if w.idleFor(now) >= d {
+				log.Printf("idle for %s; exiting", d)
+				stop()
+				return
+			}
+		}
+	}
 }
 
 // persistence reports whether this server outlives its client: not when it

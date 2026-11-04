@@ -209,6 +209,16 @@ func (s *Service) startIndex(req IndexRequest, scheduleID int64, onDone func(Job
 
 // Jobs returns all jobs, newest first. Finished jobs are kept for the life of
 // the process so a reconnecting client can see how a run ended.
+// Busy reports whether an index job is running.
+func (s *Service) Busy() bool {
+	for _, j := range s.Jobs() {
+		if j.State == JobRunning {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) Jobs() []Job {
 	s.jobs.mu.Lock()
 	out := make([]Job, 0, len(s.jobs.jobs))

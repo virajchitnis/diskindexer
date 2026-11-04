@@ -89,12 +89,12 @@ public struct HostKeyProblem: Sendable, Equatable {
     public var summary: String {
         switch kind {
         case .unknown:
-            return "This Mac hasn\u{2019}t connected to \(address) before, so it can\u{2019}t yet tell whether the server is the one you expect."
+            return "\(ThisDevice.sentenceName) hasn\u{2019}t connected to \(address) before, so it can\u{2019}t yet tell whether the server is the one you expect."
         case .changed:
             if !matchingAddresses.isEmpty {
-                return "\(address) now has a different host key than the one this Mac trusted for it, but it\u{2019}s the key you already trust for \(matchingAddresses.joined(separator: ", "))."
+                return "\(address) now has a different host key than the one \(ThisDevice.name) trusted for it, but it\u{2019}s the key you already trust for \(matchingAddresses.joined(separator: ", "))."
             }
-            return "\(address)\u{2019}s host key has changed since this Mac last connected. The server may have been reinstalled, the address may now belong to another machine, or someone may be intercepting the connection."
+            return "\(address)\u{2019}s host key has changed since \(ThisDevice.name) last connected. The server may have been reinstalled, the address may now belong to another machine, or someone may be intercepting the connection."
         }
     }
 

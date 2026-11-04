@@ -79,3 +79,22 @@ jobs:
         with:
           name: UITests.xcresult
           path: build/UITests.xcresult
+
+  ios-app:
+    name: iOS app build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Generate the Xcode project
+        working-directory: apple/Xcode
+        run: xcodegen generate
+      # Unsigned, for the Simulator: checks the app target and its packages
+      # build for iOS. The SSH transport itself is tested on macOS above.
+      - name: Build for the iOS Simulator
+        run: |
+          xcodebuild build \
+            -project apple/Xcode/DiskIndexer.xcodeproj \
+            -scheme DiskIndexerIOS \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

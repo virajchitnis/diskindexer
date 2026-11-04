@@ -96,9 +96,11 @@ func onlySchedule(t *testing.T, s *Service) Schedule {
 func TestRunDueSchedules_IndexesThenSkipsUnpluggedDisk(t *testing.T) {
 	s := newTestService(t)
 	root := writeTree(t, map[string]string{"Photos/a.jpg": "a"})
+	assert.False(t, s.Busy())
 	j, err := s.StartIndex(IndexRequest{Disk: "D", MountPath: root})
 	require.NoError(t, err)
 	require.Equal(t, JobDone, waitJob(t, s, j.ID).State)
+	assert.False(t, s.Busy())
 
 	_, err = s.SaveSchedule("", 0, ScheduleRequest{Disk: "D", Path: root, IntervalHours: 24, Enabled: true})
 	require.NoError(t, err)

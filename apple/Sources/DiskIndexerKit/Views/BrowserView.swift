@@ -26,9 +26,17 @@ public struct BrowserView: View {
     @State private var showSchedules = false
     @State private var confirmInstall = false
     @State private var dismissedUpdate: String?
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
 
-    public init(model: AppModel) {
+    /// Shown at the top of the sidebar on iPhone and iPad, e.g. a server
+    /// menu: there the split view's toolbar doesn't reach its columns.
+    private let sidebarAccessory: AnyView?
+
+    public init(model: AppModel, sidebarAccessory: AnyView? = nil) {
         self.model = model
+        self.sidebarAccessory = sidebarAccessory
     }
 
     public var body: some View {
@@ -43,64 +51,34 @@ public struct BrowserView: View {
                 scheduleDraft = draft
             })
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+            #if os(iOS)
+            .navigationTitle(model.transport?.displayName ?? "DiskIndexer")
+            .toolbar {
+                if let sidebarAccessory {
+                    ToolbarItem(placement: .topBarLeading) { sidebarAccessory }
+                }
+            }
+            #endif
         } detail: {
             detail
+            #if os(iOS)
+                // On the results, not the split view: on iPhone the split
+                // view's own search field stays with the sidebar.
+                .searchable(text: $model.query, placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: "Search files and folders")
+                .toolbar { iosTools }
+            #endif
         }
+        #if os(macOS)
         .searchable(text: $model.query, placement: .toolbar, prompt: "Search files and folders")
+        #endif
         .inspector(isPresented: $showInspector) {
             DetailView(file: model.selectedFile)
                 .inspectorColumnWidth(min: 220, ideal: 280)
         }
-        .toolbar {
-            ToolbarItem {
-                Picker("Type", selection: $model.typeFilter) {
-                    ForEach(TypeFilter.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .help("Show files, folders, or both")
-            }
-            ToolbarItem {
-                Button {
-                    indexDraft = IndexDraft()
-                } label: {
-                    Label("Index Disk", systemImage: "plus.circle")
-                }
-                .help("Index a disk")
-                .disabled(model.status != .connected)
-            }
-            ToolbarItem {
-                Button {
-                    showJobs.toggle()
-                } label: {
-                    Label("Jobs", systemImage: model.runningJobs.isEmpty ? "clock" : "clock.badge")
-                }
-                .help("Index jobs")
-                .popover(isPresented: $showJobs) {
-                    JobsView(model: model)
-                        .frame(width: 380)
-                        .frame(minHeight: 120, maxHeight: 420)
-                }
-            }
-            if model.schedulesAvailable {
-                ToolbarItem {
-                    Button {
-                        showSchedules = true
-                    } label: {
-                        Label("Schedules", systemImage: "calendar.badge.clock")
-                    }
-                    .help("Periodic reindexing")
-                    .accessibilityIdentifier("toolbar.schedules")
-                }
-            }
-            ToolbarItem {
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Label("Details", systemImage: "sidebar.right")
-                }
-                .help("Show details for the selected item")
-            }
-        }
+        #if os(macOS)
+        .toolbar { macTools }
+        #endif
         .sheet(item: $indexDraft) { draft in
             IndexSheet(model: model, draft: draft) { started in
                 indexDraft = nil
@@ -131,6 +109,100 @@ public struct BrowserView: View {
             set: { if !$0 { model.dismissInstall() } }
         )) {
             InstallProgressView(model: model)
+        }
+    }
+
+    #if os(macOS)
+    @ToolbarContentBuilder
+    private var macTools: some ToolbarContent {
+        ToolbarItem {
+            Picker("Type", selection: $model.typeFilter) {
+                ForEach(TypeFilter.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .help("Show files, folders, or both")
+        }
+        ToolbarItem {
+            Button {
+                indexDraft = IndexDraft()
+            } label: {
+                Label("Index Disk", systemImage: "plus.circle")
+            }
+            .help("Index a disk")
+            .disabled(model.status != .connected)
+        }
+        ToolbarItem { jobsButton }
+        if model.schedulesAvailable {
+            ToolbarItem {
+                Button {
+                    showSchedules = true
+                } label: {
+                    Label("Schedules", systemImage: "calendar.badge.clock")
+                }
+                .help("Periodic reindexing")
+                .accessibilityIdentifier("toolbar.schedules")
+            }
+        }
+        ToolbarItem {
+            Button {
+                showInspector.toggle()
+            } label: {
+                Label("Details", systemImage: "sidebar.right")
+            }
+            .help("Show details for the selected item")
+        }
+    }
+    #else
+    /// The same actions, fewer buttons: a phone's navigation bar has room
+    /// for two. On a phone, details open by tapping a result.
+    @ToolbarContentBuilder
+    private var iosTools: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if sizeClass == .regular {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Details", systemImage: "sidebar.right")
+                }
+            }
+            jobsButton
+            Menu {
+                Picker("Show", selection: $model.typeFilter) {
+                    ForEach(TypeFilter.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Button {
+                    indexDraft = IndexDraft()
+                } label: {
+                    Label("Index Disk\u{2026}", systemImage: "plus.circle")
+                }
+                .disabled(model.status != .connected)
+                if model.schedulesAvailable {
+                    Button {
+                        showSchedules = true
+                    } label: {
+                        Label("Schedules", systemImage: "calendar.badge.clock")
+                    }
+                    .accessibilityIdentifier("toolbar.schedules")
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .accessibilityIdentifier("toolbar.more")
+        }
+    }
+    #endif
+
+    private var jobsButton: some View {
+        Button {
+            showJobs.toggle()
+        } label: {
+            Label("Jobs", systemImage: model.runningJobs.isEmpty ? "clock" : "clock.badge")
+        }
+        .help("Index jobs")
+        .popover(isPresented: $showJobs) {
+            JobsView(model: model)
+                .macFrame(width: 380)
+                .macFrame(minHeight: 120, maxHeight: 420)
         }
     }
 
@@ -248,7 +320,7 @@ public struct BrowserView: View {
         let offline = model.status != .connected
         VStack(spacing: 0) {
             // Stale results stay usable (copy a path) but look stale.
-            ResultsTable(model: model, dimmed: offline)
+            ResultsTable(model: model, dimmed: offline, onShowDetails: { showInspector = true })
                 // The table's scroll view otherwise draws past its frame,
                 // under the banner below.
                 .clipped()
@@ -431,7 +503,7 @@ struct InstallProgressView: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .macFrame(width: 460)
     }
 
     private func logView(_ lines: [String]) -> some View {
@@ -440,5 +512,26 @@ struct InstallProgressView: View {
                 Text(line).font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+extension View {
+    /// A fixed width on macOS. iOS sizes sheets and popovers to the screen.
+    func macFrame(width: CGFloat) -> some View {
+        #if os(macOS)
+        frame(width: width)
+        #else
+        self
+        #endif
+    }
+
+    /// Size limits on macOS only, as for macFrame(width:).
+    func macFrame(minWidth: CGFloat? = nil, minHeight: CGFloat? = nil, idealHeight: CGFloat? = nil,
+                  maxHeight: CGFloat? = nil) -> some View {
+        #if os(macOS)
+        frame(minWidth: minWidth, minHeight: minHeight, idealHeight: idealHeight, maxHeight: maxHeight)
+        #else
+        self
+        #endif
     }
 }

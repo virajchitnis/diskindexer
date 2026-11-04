@@ -451,12 +451,24 @@ How the app copes with slow connections:
 - The app logs how long each connection step took. See them with `log show --last 1h --predicate 'subsystem == "com.virajchitnis.diskindexer"'`.
 - Index jobs keep running on the server, and their progress reappears once the app reconnects. If the server itself restarts mid-run (which stops the run), the job is shown as **Interrupted** rather than appearing to run forever. Files indexed so far are kept.
 
+## iPhone and iPad App (in development)
+
+The same app for iPhone and iPad, for searching and managing a server's indexes away from your desk. It has no local mode: iOS can't see your disks.
+
+- **Connecting:** the app has no `ssh` binary, so it logs in with its own SSH key. It creates the key on first launch and keeps it in the Keychain on that device. Add the public key (Add Server… or This Device's Key… show it) as a line of `~/.ssh/authorized_keys` on the server.
+- **Addresses:** each server has one or more `user@host` or `user@host:port` addresses, tried in order. There's no `~/.ssh/config`, so include the user.
+- **The server needs a diskindexer with `connect`.** The app runs `diskindexer connect` over SSH for each connection to reach the server's socket.
+- **No service on the server?** The app starts `diskindexer serve` for itself, as the Mac app does. When iOS suspends the app, its SSH connection drops, so this server stops itself after 10 minutes with no requests and no index job running. Until then, reconnecting reuses it, along with any running index job.
+- **Host keys:** the first connection to an address shows the server's key fingerprint to trust, and a changed key is flagged, as in the Mac app.
+
+Build it for the Simulator with `scripts/ios-sim-app.sh`, or generate the Xcode project (`cd apple/Xcode && xcodegen generate`) and run the DiskIndexerIOS scheme on a device.
+
 ## Testing
 
 - **Go:** `make test`, with tests for the indexer, database, server, CLI commands and TUI. `make coverage-go` fails if coverage across all packages drops below 80%.
 - **macOS app logic:** `make test-apple` runs the Swift tests. Many of them drive the app's model against a real `diskindexer serve`. `make coverage-apple` gates that logic at 80%.
 - **SSH transport for iOS:** `make test-apple` also runs the `DiskIndexerSSH` tests. They start a throwaway `sshd` on a random local port, as your user and with its own keys, in front of a real `diskindexer serve`. Set `DISKINDEXER_SSH_PERF=1` to also print response times through the SSH bridge.
-- **iOS app (in development):** `scripts/ios-sim-app.sh` builds `build/DiskIndexerIOS.app` for the iOS Simulator; install it with `xcrun simctl install booted build/DiskIndexerIOS.app`.
+- **iOS app:** CI builds the DiskIndexerIOS target for the Simulator. Locally, `scripts/ios-sim-app.sh` builds `build/DiskIndexerIOS.app`; install it with `xcrun simctl install booted build/DiskIndexerIOS.app`, and pass `-addServer user@host` to `xcrun simctl launch` to add a server without typing.
 - **End-to-end UI tests:** `apple/UITests` uses XCUITest to drive the real app: browsing, search and filters, indexing a disk, renaming, drag-to-move with undo, the name-clash alert, and the can't-connect screen. They need full Xcode and run in CI. To run them locally:
 
   ```bash

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public enum Format {
     /// Short size like the TUI: 512B, 1.5K, 20.0M, 1.2G, 3.4T.
@@ -140,4 +143,19 @@ public extension Format {
             : hours % 24 == 0 ? (hours / 24, "day") : (hours, "hour")
         return n == 1 ? "Every \(unit)" : "Every \(n) \(unit)s"
     }
+}
+
+/// What to call the device the app runs on, in sentences: "this Mac",
+/// "this iPhone".
+public enum ThisDevice {
+    public static var name: String {
+        #if os(macOS)
+        "this Mac"
+        #else
+        UIDevice.current.userInterfaceIdiom == .pad ? "this iPad" : "this iPhone"
+        #endif
+    }
+
+    /// name, capitalised to start a sentence.
+    public static var sentenceName: String { name.prefix(1).uppercased() + name.dropFirst() }
 }

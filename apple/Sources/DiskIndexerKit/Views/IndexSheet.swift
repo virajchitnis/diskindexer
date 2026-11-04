@@ -246,7 +246,7 @@ struct IndexSheet: View {
         }
         // Capped so the buttons stay inside the window (min height 560);
         // the form scrolls instead.
-        .frame(minWidth: 520, minHeight: 420, idealHeight: 500, maxHeight: 500)
+        .macFrame(minWidth: 520, minHeight: 420, idealHeight: 500, maxHeight: 500)
         .sheet(item: $browsing) { target in
             RemoteFolderPicker(model: model, startPath: path(for: target)) { picked in
                 if let picked { set(picked, for: target) }
@@ -431,7 +431,7 @@ struct RemoteFolderPicker: View {
             }
             .padding(10)
         }
-        .frame(minWidth: 460, minHeight: 380)
+        .macFrame(minWidth: 460, minHeight: 380)
         .task {
             roots = (try? await model.fsRoots()) ?? []
             let start = startPath.isEmpty ? (roots.first?.path ?? "/") : startPath

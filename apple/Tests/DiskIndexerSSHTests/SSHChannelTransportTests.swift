@@ -12,29 +12,24 @@ import Testing
     #expect(SSHAddress(user: "me", host: "h", port: 2222).description == "me@h:2222")
 }
 
-@Test func relayCommandQuotesTheSocket() throws {
+@Test func relayCommandQuotesItsArguments() throws {
     guard #available(macOS 15.0, *) else { return }
     // Run the command with a stand-in diskindexer that prints its arguments.
-    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: home) }
-    try FileManager.default.createDirectory(at: home.appendingPathComponent(".local/bin"), withIntermediateDirectories: true)
-    let fake = home.appendingPathComponent(".local/bin/diskindexer")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("di relay \(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fake = dir.appendingPathComponent("it's diskindexer")
     try "#!/bin/sh\nprintf '%s|' \"$@\"\n".write(to: fake, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
 
-    func run(_ command: String) throws -> String {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", command]
-        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
-        let out = Pipe()
-        p.standardOutput = out
-        try p.run()
-        p.waitUntilExit()
-        return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-    }
-    #expect(try run(SSHChannelTransport.relayCommand(socketPath: nil)) == "connect|")
-    #expect(try run(SSHChannelTransport.relayCommand(socketPath: "/a b/it's.sock")) == "connect|--socket|/a b/it's.sock|")
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+    p.arguments = ["-c", SSHChannelTransport.relayCommand(binary: fake.path, socket: "/a b/it's.sock")]
+    let out = Pipe()
+    p.standardOutput = out
+    try p.run()
+    p.waitUntilExit()
+    #expect(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "connect|--socket|/a b/it's.sock|")
 }
 
 /// A real sshd (as this user, on a free port) in front of a real
@@ -67,13 +62,13 @@ struct SSHEndToEnd {
         let info = try await api.info()
         #expect(info.apiVersion == supportedAPIVersion)
 
-        // Several at once, each on its own exec channel.
+        // More at once than OpenSSH allows sessions: URLSession queues them.
         let started = Date()
         try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<12 { group.addTask { _ = try await api.disks() } }
+            for _ in 0..<30 { group.addTask { _ = try await api.disks() } }
             try await group.waitForAll()
         }
-        print("12 concurrent requests:", Date().timeIntervalSince(started))
+        print("30 concurrent requests:", Date().timeIntervalSince(started))
 
         // A progress stream stays open for the whole job.
         let tree = env.dir + "/disk"
@@ -90,19 +85,46 @@ struct SSHEndToEnd {
         transport.disconnect()
     }
 
-    @Test func reportsAMissingServer() async throws {
+    @Test func startsAServerOnDemand() async throws {
         guard #available(macOS 15.0, *) else { return }
         let env = try SSHTestServer()
         defer { env.stop() }
         let store = MemoryHostKeyStore()
         store.trust(env.hostKeyLine, for: env.address.description)
-        let transport = env.transport(store: store, socket: env.dir + "/nothing.sock")
-        do {
-            _ = try await transport.connect()
-            Issue.record("connected without a server")
-        } catch let f as ConnectionFailure {
-            #expect(f.reason == .notRunning)
+        // No server on this socket, but diskindexer is on PATH: the
+        // transport starts one for the connection.
+        let socket = env.dir + "/ondemand.sock"
+        let transport = SSHChannelTransport(name: "test", addresses: [env.address], key: env.clientKey,
+                                            hostKeys: store, socketPath: socket, binary: env.binary,
+                                            onDemandIdleExit: 1)
+        let api = APIClient(endpoint: try await transport.connect())
+        #expect(try await api.info().persistent == false)
+
+        // sshd keeps it running after the connection closes, until it has
+        // been idle for onDemandIdleExit.
+        transport.disconnect()
+        for _ in 0..<100 where FileManager.default.fileExists(atPath: socket) {
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
+        #expect(!FileManager.default.fileExists(atPath: socket))
+
+        // A socket left by a server that was killed: the next connect starts
+        // a server in its place.
+        let dead = try #require(socket.withCString { p -> Int32? in
+            let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutableBytes(of: &addr.sun_path) { _ = strlcpy($0.baseAddress!.assumingMemoryBound(to: CChar.self), p, $0.count) }
+            let ok = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            return ok == 0 ? fd : nil
+        })
+        close(dead)
+        #expect(FileManager.default.fileExists(atPath: socket))
+        let again = APIClient(endpoint: try await transport.connect())
+        #expect(try await again.info().persistent == false)
+        transport.disconnect()
     }
 
     @Test func rejectsAnUnknownKey() async throws {
@@ -113,7 +135,7 @@ struct SSHEndToEnd {
         store.trust(env.hostKeyLine, for: env.address.description)
         let transport = SSHChannelTransport(name: "test", addresses: [env.address],
                                             key: Curve25519.Signing.PrivateKey(), hostKeys: store,
-                                            command: env.command(socket: env.socket))
+                                            socketPath: env.socket, binary: env.binary)
         do {
             _ = try await transport.connect()
             Issue.record("logged in with a key the server doesn't know")
@@ -137,6 +159,9 @@ final class SSHTestServer {
     var hostFingerprint = ""
 
     var address: SSHAddress { SSHAddress(user: NSUserName(), host: "127.0.0.1", port: port) }
+    /// The build under test. Also on the sessions' PATH, so the server
+    /// lookup finds a diskindexer to start on demand.
+    let binary = ProcessInfo.processInfo.environment["DISKINDEXER_BIN"]!
 
     init() throws {
         var template = Array("/tmp/di-ssh.XXXXXX".utf8CString)
@@ -161,11 +186,11 @@ final class SSHTestServer {
             StrictModes no
             PasswordAuthentication no
             KbdInteractiveAuthentication no
+            SetEnv "PATH=\((binary as NSString).deletingLastPathComponent):/usr/bin:/bin"
             """.write(toFile: dir + "/sshd_config", atomically: true, encoding: .utf8)
 
-        let bin = ProcessInfo.processInfo.environment["DISKINDEXER_BIN"]!
         let s = Process()
-        s.executableURL = URL(fileURLWithPath: bin)
+        s.executableURL = URL(fileURLWithPath: binary)
         s.arguments = ["serve", "--listen", "unix:" + socket, "--db", dir + "/x.diskindex", "--stdin-watch"]
         s.standardInput = serveStdin
         s.standardOutput = FileHandle.nullDevice
@@ -192,14 +217,9 @@ final class SSHTestServer {
 
     var sshdLog: String { (try? String(contentsOfFile: dir + "/sshd.log", encoding: .utf8)) ?? "" }
 
-    func command(socket: String) -> String {
-        let bin = ProcessInfo.processInfo.environment["DISKINDEXER_BIN"]!
-        return "\(SSHChannelTransport.shellQuote(bin)) connect --socket \(SSHChannelTransport.shellQuote(socket))"
-    }
-
     func transport(store: HostKeyStore, socket: String? = nil) -> SSHChannelTransport {
         SSHChannelTransport(name: "test", addresses: [address], key: clientKey, hostKeys: store,
-                            command: command(socket: socket ?? self.socket))
+                            socketPath: socket ?? self.socket, binary: binary)
     }
 
     func stop() {

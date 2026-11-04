@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -537,4 +539,37 @@ func TestRelayWithoutServer(t *testing.T) {
 	require.ErrorIs(t, err, errNoServer)
 	assert.Equal(t, 3, exitCode(err))
 	assert.Equal(t, 1, exitCode(errors.New("other")))
+}
+
+func TestIdleExit(t *testing.T) {
+	const d, tick = 60 * time.Millisecond, 10 * time.Millisecond
+	run := func(w *idleWatch, busy func() bool, within time.Duration) bool {
+		stopped := make(chan struct{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go w.exitWhenIdle(ctx, d, tick, busy, func() { close(stopped) })
+		select {
+		case <-stopped:
+			return true
+		case <-time.After(within):
+			return false
+		}
+	}
+	notBusy := func() bool { return false }
+
+	// Idle: exits.
+	assert.True(t, run(newIdleWatch(), notBusy, time.Second))
+
+	// A running index job keeps it alive.
+	assert.False(t, run(newIdleWatch(), func() bool { return true }, 4*d))
+
+	// So does a request in flight, such as a progress stream.
+	w := newIdleWatch()
+	release := make(chan struct{})
+	h := w.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	go h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	time.Sleep(tick)
+	assert.False(t, run(w, notBusy, 4*d))
+	close(release)
+	assert.True(t, run(w, notBusy, time.Second))
 }
