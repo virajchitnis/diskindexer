@@ -43,7 +43,7 @@ CI (`.github/workflows/ci.yml`) runs on every push to main and every PR:
 - macOS: `make coverage-apple` and `make mac-app` (uploads the app zip).
 - macOS UI tests: generates `apple/Xcode/DiskIndexer.xcodeproj` from `project.yml` with XcodeGen and runs the XCUITest suite in `apple/UITests`. It uploads the `.xcresult` on failure.
 
-Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.readFrom`, `index.start`, `results`, `status.count`, `job.phase`, `toolbar.schedules`, `schedule.path`, `schedule.every`, `schedule.save`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
+Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` and `DiskIndexerSSH`, excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.readFrom`, `index.start`, `results`, `status.count`, `job.phase`, `toolbar.schedules`, `schedule.path`, `schedule.every`, `schedule.save`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
 
 ```bash
 make test
@@ -64,6 +64,7 @@ cmd/                     # cobra commands (one file per command)
   search.go              # search command (launches TUI)
   schedule.go            # schedule add/list/remove (run by serve)
   serve.go               # serve command: HTTP API for the GUI apps
+  connect.go             # connect command: stdin/stdout relay to serve's socket (iOS app's SSH path)
 internal/
   api/                   # JSON wire types + Service (search, manage, index jobs, fs browse)
   server/                # net/http routes over api.Service, SSE job progress, bearer auth
@@ -72,7 +73,9 @@ internal/
   indexer/               # filesystem walk, change detection, incremental logic
   search/                # query building, filter application, multi-DB merge
 tui/                     # bubbletea interactive TUI (model, styles, tests)
-apple/                   # SwiftPM package: DiskIndexerKit (shared, macOS+iOS) + DiskIndexerMac app
+apple/                   # SwiftPM package: DiskIndexerKit (shared, macOS+iOS), DiskIndexerMac app,
+                         #   DiskIndexerSSH (Citadel transport for iOS), DiskIndexerIOS (spike app)
+scripts/ios-sim-app.sh   # builds DiskIndexerIOS into build/DiskIndexerIOS.app for the Simulator
 deploy/                  # systemd user unit for `diskindexer serve`
 ```
 
@@ -102,6 +105,12 @@ deploy/                  # systemd user unit for `diskindexer serve`
 - **One SSH login per connect**: `SSHTunnel.startMaster` starts `ssh -M -N` with its own `ControlPath` in a `mkdtemp` folder under `/tmp` (control sockets have a short path limit). It waits for the socket file to appear, which means the login succeeded. `findServer`, the on-demand `serve` session and `-O forward` then all run over it with `ControlMaster=no`, and `ControlPath=none` stays on every other ssh call. Termination handlers ignore processes that aren't the current master or session, so a late exit from an old connection can't disconnect a new one. Keepalive is 5s×6; `AppModel.networkChanged` (fed by `NetworkWatcher`/NWPathMonitor) pings with a 4s timeout after a network change and reconnects at once if it fails, or retries now when waiting.
 - **Slow links**: after `info`, `establish` loads metadata, jobs and schedules concurrently (`async let`) and records `connectTimings` (also logged at notice level, category `connect`). An `info` slower than 0.25s rebuilds the `APIClient` with `latency`, which scales its timeouts. `server.gzipJSON` compresses everything except `/events`. `AppModel` keeps the last server results as `baseline`, and `filterLocally` shows the matches among them at once, when `narrows(req, base)`, with `provisional` set. Snapshots (`snapshotDirectory` + `cacheKey`, one JSON per connection) restore the sidebar and default-view results on launch (`showingSnapshot`). The Mac app turns snapshots off when `DISKINDEXER_DB` is set, so UI tests start clean.
 - **Swift code layout**: anything needing `Process`/AppKit stays in `DiskIndexerMac`; `DiskIndexerKit` must stay iOS-compatible for the planned iPhone/iPad app (remote-only, SSH via Citadel, sideloaded with AltStore).
+- **iOS transport (spike)**: `DiskIndexerSSH.SSHChannelTransport` logs in once with Citadel, using an Ed25519 key that `SSHKeys` keeps in the Keychain. Trusted host keys are stored by address in a `HostKeyStore`, and `HostKeyCheck` reports unknown or changed keys as `HostKeyProblem`. It opens a loopback `NWListener` and runs each accepted HTTP connection through its own exec channel running `diskindexer connect`: swift-nio-ssh can't forward Unix sockets, and this needs no TCP port or token on the server. `probe()` sends one raw `GET /v1/info` first; Citadel sometimes loses exit statuses, so "not installed"/"no server is running" are also read from stderr.
+  - Gotchas:
+    - Citadel's `withExec` throws `ChannelError.alreadyClosed` when the command ends the channel first; that's expected.
+    - It's `@available(macOS 15)`, so the Mac tests check `#available` at runtime.
+    - OpenSSH's `MaxSessions` (default 10) caps exec channels per login. Exceeding it fails the request at once, so keep URLSession's connections per host below it.
+    - Test sshds must not be probed by connecting to their port: OpenSSH 10's `PerSourcePenalties` then drops connections. The tests wait for "Server listening" in sshd's log instead.
 
 ## Index File Location
 

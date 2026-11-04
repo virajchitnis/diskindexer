@@ -10,7 +10,11 @@ struct JobsView: View {
                 Spacer()
                 if model.jobs.contains(where: { $0.state != .running }) {
                     Button("Clear Finished") { model.clearFinishedJobs() }
+                        #if os(macOS)
                         .buttonStyle(.link)
+                        #else
+                        .buttonStyle(.borderless)
+                        #endif
                 }
             }
             .padding(12)

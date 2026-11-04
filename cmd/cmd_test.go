@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -508,4 +510,31 @@ func TestParseEvery(t *testing.T) {
 		assert.Error(t, err, in)
 	}
 	assert.Equal(t, "every 5 hours", describeInterval(api.Schedule{ScheduleRequest: api.ScheduleRequest{IntervalHours: 5}}))
+}
+
+func TestRelayToServer(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "s.sock")
+	l, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		b, _ := io.ReadAll(c) // until the relay closes its write side
+		_, _ = c.Write(append([]byte("echo:"), b...))
+	}()
+
+	var out bytes.Buffer
+	require.NoError(t, relay(sock, strings.NewReader("hello"), &out))
+	assert.Equal(t, "echo:hello", out.String())
+}
+
+func TestRelayWithoutServer(t *testing.T) {
+	err := relay(filepath.Join(t.TempDir(), "missing.sock"), strings.NewReader(""), io.Discard)
+	require.ErrorIs(t, err, errNoServer)
+	assert.Equal(t, 3, exitCode(err))
+	assert.Equal(t, 1, exitCode(errors.New("other")))
 }

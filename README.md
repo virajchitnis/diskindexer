@@ -334,6 +334,17 @@ diskindexer serve --listen 127.0.0.1:7878 --token s3cret
 
 Searches use the indexes in `known_dbs`, and index runs write to `default_db`, the same as the CLI. Index runs happen inside the server, so they keep going if the app disconnects.
 
+### `connect`
+
+Relays stdin and stdout to a running server's Unix socket until either side closes. The iPhone and iPad app (in development) runs it over SSH for each connection, because SSH libraries on iOS can't forward Unix sockets. You don't run it by hand.
+
+```bash
+diskindexer connect                       # ~/.config/diskindexer/server.sock
+diskindexer connect --socket /path/to.sock
+```
+
+It exits with status 3 when no server is listening on the socket.
+
 ## macOS App
 
 `DiskIndexer.app` is a native SwiftUI app with the same features as the TUI:
@@ -444,6 +455,8 @@ How the app copes with slow connections:
 
 - **Go:** `make test`, with tests for the indexer, database, server, CLI commands and TUI. `make coverage-go` fails if coverage across all packages drops below 80%.
 - **macOS app logic:** `make test-apple` runs the Swift tests. Many of them drive the app's model against a real `diskindexer serve`. `make coverage-apple` gates that logic at 80%.
+- **SSH transport for iOS:** `make test-apple` also runs the `DiskIndexerSSH` tests. They start a throwaway `sshd` on a random local port, as your user and with its own keys, in front of a real `diskindexer serve`. Set `DISKINDEXER_SSH_PERF=1` to also print response times through the SSH bridge.
+- **iOS app (in development):** `scripts/ios-sim-app.sh` builds `build/DiskIndexerIOS.app` for the iOS Simulator; install it with `xcrun simctl install booted build/DiskIndexerIOS.app`.
 - **End-to-end UI tests:** `apple/UITests` uses XCUITest to drive the real app: browsing, search and filters, indexing a disk, renaming, drag-to-move with undo, the name-clash alert, and the can't-connect screen. They need full Xcode and run in CI. To run them locally:
 
   ```bash
