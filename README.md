@@ -53,7 +53,8 @@ The resulting binary is statically linked and requires no runtime dependencies o
 | `make mac-app` | Build `build/DiskIndexer.app` (and a `.zip` of it) |
 | `make dmg` | Build `build/DiskIndexer.dmg`, a drag-to-install disk image |
 | `make install-mac` | Install the app to `/Applications` and link its CLI to `~/.local/bin/diskindexer` |
-| `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns` and a 1024 px PNG |
+| `make icon` | Render `apple/Icon/AppIcon.svg` into the macOS `.icns`, a 1024 px PNG, and the opaque iOS icon |
+| `make ios-ipa` | Build `build/DiskIndexer-iOS.ipa`, an unsigned iPhone/iPad app to install with AltStore (needs Xcode and XcodeGen) |
 | `make install` | Build for Linux and copy to the server |
 | `make install-service` | `install`, then set up and restart the `diskindexer serve` systemd user service on the server |
 | `make clean` | Remove build artifacts |
@@ -461,14 +462,22 @@ The same app for iPhone and iPad, for searching and managing a server's indexes 
 - **No service on the server?** The app starts `diskindexer serve` for itself, as the Mac app does. When iOS suspends the app, its SSH connection drops, so this server stops itself after 10 minutes with no requests and no index job running. Until then, reconnecting reuses it, along with any running index job.
 - **Host keys:** the first connection to an address shows the server's key fingerprint to trust, and a changed key is flagged, as in the Mac app.
 
-Build it for the Simulator with `scripts/ios-sim-app.sh`, or generate the Xcode project (`cd apple/Xcode && xcodegen generate`) and run the DiskIndexerIOS scheme on a device.
+**Installing it:** the app isn't on the App Store, so you sideload it with [AltStore](https://altstore.io) (or SideStore), which signs it with your free Apple ID:
+
+1. Get `DiskIndexer-iOS.ipa`: download the `DiskIndexer-iOS` artifact from a CI run on GitHub (Actions → the run → Artifacts), or build it with `make ios-ipa` (needs Xcode and `brew install xcodegen`).
+2. Open it on the iPhone or iPad with AltStore (or add it from AltServer on the Mac with the device connected).
+3. On first connect to an address on your home network, allow Local Network access when iOS asks; without it the connection fails.
+
+A free Apple ID's signature lasts 7 days; AltStore renews it in the background while AltServer is running on a Mac on the same network.
+
+For development, build it for the Simulator with `scripts/ios-sim-app.sh`, or generate the Xcode project (`cd apple/Xcode && xcodegen generate`) and run the DiskIndexerIOS scheme.
 
 ## Testing
 
 - **Go:** `make test`, with tests for the indexer, database, server, CLI commands and TUI. `make coverage-go` fails if coverage across all packages drops below 80%.
 - **macOS app logic:** `make test-apple` runs the Swift tests. Many of them drive the app's model against a real `diskindexer serve`. `make coverage-apple` gates that logic at 80%.
 - **SSH transport for iOS:** `make test-apple` also runs the `DiskIndexerSSH` tests. They start a throwaway `sshd` on a random local port, as your user and with its own keys, in front of a real `diskindexer serve`. Set `DISKINDEXER_SSH_PERF=1` to also print response times through the SSH bridge.
-- **iOS app:** CI builds the DiskIndexerIOS target for the Simulator. Locally, `scripts/ios-sim-app.sh` builds `build/DiskIndexerIOS.app`; install it with `xcrun simctl install booted build/DiskIndexerIOS.app`, and pass `-addServer user@host` to `xcrun simctl launch` to add a server without typing.
+- **iOS app:** CI builds the unsigned `.ipa` (`make ios-ipa`) and uploads it as the `DiskIndexer-iOS` artifact. Locally, `scripts/ios-sim-app.sh` builds `build/DiskIndexerIOS.app`; install it with `xcrun simctl install booted build/DiskIndexerIOS.app`, and pass `-addServer user@host` to `xcrun simctl launch` to add a server without typing.
 - **End-to-end UI tests:** `apple/UITests` uses XCUITest to drive the real app: browsing, search and filters, indexing a disk, renaming, drag-to-move with undo, the name-clash alert, and the can't-connect screen. They need full Xcode and run in CI. To run them locally:
 
   ```bash

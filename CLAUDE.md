@@ -21,7 +21,8 @@ make install-service     # install + systemd user service running `diskindexer s
 make mac-app             # build/DiskIndexer.app (universal, bundles diskindexer) + zip
 make dmg                 # build/DiskIndexer.dmg (app + Applications link); attached by `make release`
 make install-mac         # app → /Applications, CLI symlink → ~/.local/bin/diskindexer
-make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG
+make icon                # render apple/Icon/AppIcon.svg → .icns + 1024px PNG + opaque iOS PNG
+make ios-ipa             # build/DiskIndexer-iOS.ipa, unsigned, for AltStore (needs XcodeGen)
 make test-apple          # Swift tests incl. AppModel tests against a real `serve` (builds the binary first)
 make coverage            # Go + Swift coverage gates (fail below COVERAGE_MIN=80)
 make release             # build all three platform binaries + gh release create
@@ -42,7 +43,7 @@ CI (`.github/workflows/ci.yml`) runs on every push to main and every PR:
 - Ubuntu: Go vet, race tests, the Go coverage gate, and cross-compiles.
 - macOS: `make coverage-apple` and `make mac-app` (uploads the app zip).
 - macOS UI tests: generates `apple/Xcode/DiskIndexer.xcodeproj` from `project.yml` with XcodeGen and runs the XCUITest suite in `apple/UITests`. It uploads the `.xcresult` on failure.
-- iOS app build: generates the same project and builds the `DiskIndexerIOS` scheme for the iOS Simulator, unsigned.
+- iOS app build: `make ios-ipa` (generates the same project, archives `DiskIndexerIOS` for devices, unsigned) and uploads the `.ipa` artifact. It checks out full history: the app's version is the last tag and its build number the commit count.
 
 Coverage gates are 80%. Go is measured with `-coverpkg=./...` (cross-package); Swift counts `DiskIndexerKit` and `DiskIndexerSSH`, excluding `Views/` (views are covered by the UI tests). CLI tests in `cmd/cmd_test.go` run commands in-process with a scratch HOME and reset cobra flags between runs (`resetFlags`). New UI-test hooks: accessibility identifiers `index.diskLabel`, `index.mountPath`, `index.readFrom`, `index.start`, `results`, `status.count`, `job.phase`, `toolbar.schedules`, `schedule.path`, `schedule.every`, `schedule.save`. The UI tests launch the app with `-selectedConnection local` and the `DISKINDEXER_BIN`/`DISKINDEXER_DB` env vars.
 
