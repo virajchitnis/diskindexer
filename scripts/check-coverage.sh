@@ -24,7 +24,7 @@ swift)
 		-show-region-summary=false -show-branch-summary=false -show-functions=false)
 	echo "$report" | sed 's#^.*/Sources/##'
 	pct=$(echo "$report" | awk '/^TOTAL/ { sub(/%/, "", $NF); print $NF }')
-	label="Swift app logic (DiskIndexerKit, excluding views)"
+	label="Swift app logic (DiskIndexerKit and DiskIndexerSSH, excluding views)"
 	;;
 *)
 	echo "usage: $0 go|swift <source> <min-percent>" >&2

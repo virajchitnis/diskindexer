@@ -50,7 +50,7 @@ struct SchedulesView: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 540, minHeight: 360, idealHeight: 440)
+        .macFrame(minWidth: 540, minHeight: 360, idealHeight: 440)
         .task {
             // Scheduled runs start on the server; keep the list and the jobs
             // (which show their progress) current while this is open.
@@ -234,7 +234,7 @@ struct ScheduleEditor: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 520, minHeight: 400, idealHeight: 440, maxHeight: 500)
+        .macFrame(minWidth: 520, minHeight: 400, idealHeight: 440, maxHeight: 500)
         .sheet(isPresented: $browsing) {
             RemoteFolderPicker(model: model, startPath: draft.path.isEmpty ? draft.savedLocation : draft.path) { picked in
                 if let picked { draft.path = picked }

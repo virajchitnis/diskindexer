@@ -19,6 +19,12 @@ SERVER              := viraj@enterprise.virajchitnis.com
 APP           := build/DiskIndexer.app
 APP_ZIP       := build/DiskIndexer-macOS.zip
 DMG           := build/DiskIndexer.dmg
+IOS_IPA       := build/DiskIndexer-iOS.ipa
+IOS_BUILD     := build/ios
+IOS_ICON      := apple/Xcode/iOSAssets.xcassets/AppIcon.appiconset/AppIcon.png
+# iOS wants a numeric version: the last tag, and the commit count as the build.
+IOS_VERSION   := $(patsubst v%,%,$(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0))
+IOS_BUILD_NUM := $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 # install-mac destinations.
 MAC_APP_DIR   ?= /Applications
 MAC_BIN_DIR   ?= $(HOME)/.local/bin
@@ -29,7 +35,7 @@ CLT_DEV       := /Library/Developer/CommandLineTools/Library/Developer
 CLT_ACTIVE    := $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null))
 SWIFT_TEST    := swift test $(if $(CLT_ACTIVE),-Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: build build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app dmg install-mac test test-apple coverage coverage-go coverage-apple clean release
+.PHONY: build build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64 install install-service icon mac-app dmg install-mac ios-ipa test test-apple coverage coverage-go coverage-apple clean release
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) .
@@ -119,6 +125,25 @@ dmg: mac-app
 	ln -s /Applications build/dmg/Applications
 	hdiutil create -volname DiskIndexer -srcfolder build/dmg -fs HFS+ -format UDZO -ov $(DMG)
 	rm -rf build/dmg
+
+# Builds an unsigned iPhone/iPad app for sideloading: AltStore (or SideStore)
+# signs it with your Apple ID when it installs it. Needs Xcode and XcodeGen
+# (`brew install xcodegen`); CI builds it too and uploads the .ipa.
+ios-ipa: icon
+	cp build/icon/AppIcon-iOS.png $(IOS_ICON)
+	cd apple/Xcode && xcodegen generate --quiet
+	rm -rf $(IOS_BUILD) $(IOS_IPA)
+	xcodebuild archive -quiet \
+		-project apple/Xcode/DiskIndexer.xcodeproj \
+		-scheme DiskIndexerIOS \
+		-destination 'generic/platform=iOS' \
+		-archivePath $(IOS_BUILD)/DiskIndexerIOS.xcarchive \
+		CODE_SIGNING_ALLOWED=NO \
+		MARKETING_VERSION=$(IOS_VERSION) CURRENT_PROJECT_VERSION=$(IOS_BUILD_NUM)
+	mkdir -p $(IOS_BUILD)/Payload
+	ditto $(IOS_BUILD)/DiskIndexerIOS.xcarchive/Products/Applications/DiskIndexer.app $(IOS_BUILD)/Payload/DiskIndexer.app
+	cd $(IOS_BUILD) && zip -qry ../DiskIndexer-iOS.ipa Payload
+	@echo "Built $(IOS_IPA) ($(IOS_VERSION), build $(IOS_BUILD_NUM))"
 
 # Installs the app on this Mac and links its bundled CLI onto PATH, so the
 # CLI updates whenever the app does. Quits a running copy first.

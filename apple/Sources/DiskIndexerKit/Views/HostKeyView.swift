@@ -12,6 +12,7 @@ struct HostKeyView: View {
 
     var body: some View {
         // Laid out by hand: ContentUnavailableView squeezes the key table.
+        ScrollView {
         VStack(spacing: 14) {
             Image(systemName: problem.needsConfirmation ? "exclamationmark.shield" : "key")
                 .font(.system(size: 36))
@@ -23,7 +24,7 @@ struct HostKeyView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 460)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                row("Address", Text(problem.address))
+                row("Address", Text(problem.address).lineLimit(1).minimumScaleFactor(0.6))
                 row(problem.kind == .changed ? "New key" : "Key", fingerprint(problem.fingerprint))
                 if let previous = problem.previousFingerprint {
                     row("Trusted key", fingerprint(previous))
@@ -58,14 +59,16 @@ struct HostKeyView: View {
             .fixedSize()
         }
         .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        }
+        .defaultScrollAnchor(.center)
         .confirmationDialog("Replace the trusted key for \(problem.address)?", isPresented: $confirmReplace, titleVisibility: .visible) {
             Button("Replace Key and Connect", role: .destructive) {
                 Task { await model.trustHostKey(problem) }
             }
         } message: {
             Text("""
-                This Mac will trust \(problem.fingerprint) for \(problem.address) from now on. \
+                \(ThisDevice.sentenceName) will trust \(problem.fingerprint) for \(problem.address) from now on. \
                 If someone is intercepting the connection, they would see what the app sends to the server.
                 """)
         }
@@ -87,6 +90,7 @@ struct HostKeyView: View {
 
     private func fingerprint(_ fp: String) -> some View {
         // Keys never wrap: a fingerprint split over lines is hard to compare.
-        Text(fp).font(.callout.monospaced()).fixedSize()
+        // Narrow screens shrink it instead.
+        Text(fp).font(.callout.monospaced()).lineLimit(1).minimumScaleFactor(0.5)
     }
 }

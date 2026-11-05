@@ -33,7 +33,7 @@ final class SSHTunnel: Transport, ServerManaging {
     private let stopping = AtomicFlag()
 
     static let ssh = "/usr/bin/ssh"
-    static let defaultSocket = "~/.config/diskindexer/server.sock"
+    static let defaultSocket = ServerLookup.defaultSocket
 
     init(name: String, hosts: [String], socketPath: String?) {
         self.displayName = name
@@ -75,11 +75,11 @@ final class SSHTunnel: Transport, ServerManaging {
         var t = Date()
         let server = try await findServer(on: host, mux: mux)
         Log.connect.notice("found server: \(Date().timeIntervalSince(t), format: .fixed(precision: 3))s")
-        if let binary = server.onDemandBinary {
+        if server.onDemand {
             // No running server: start one for this connection. Its stdin is
             // a pipe the app holds, so when the app disconnects or dies, the
             // session ends and `serve --stdin-watch` exits.
-            let remote = "\(Self.shellQuote(binary)) serve --stdin-watch --listen \(Self.shellQuote("unix:" + server.socket))"
+            let remote = ServerLookup.onDemandCommand(server)
             let p = Process()
             p.executableURL = URL(fileURLWithPath: Self.ssh)
             p.arguments = mux + [host, remote]
@@ -220,60 +220,13 @@ final class SSHTunnel: Transport, ServerManaging {
     /// Where to connect: an existing server's socket, or, when nothing is
     /// listening but diskindexer is installed, a socket to start one on for
     /// this connection.
-    private struct FoundServer {
-        var socket: String
-        var onDemandBinary: String?
-    }
-
-    static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
-    }
-
-    /// Script run on the server (with `sh -c`) to find what to connect to.
-    /// When a systemd service is installed, it waits a few seconds for the
-    /// socket: without linger, the service only starts with this login.
-    static func findServerScript(socketPath: String) -> String {
-        let shellPath = socketPath.hasPrefix("~/") ? "$HOME/" + socketPath.dropFirst(2) : socketPath
-        return """
-            p="\(shellPath)"
-            if systemctl --user cat diskindexer >/dev/null 2>&1; then
-              i=0; while [ ! -S "$p" ] && [ $i -lt 20 ]; do sleep 0.25; i=$((i+1)); done
-            fi
-            if [ -S "$p" ]; then printf 'socket\n%s\n' "$p"; exit 0; fi
-            bin="$HOME/.local/bin/diskindexer"
-            [ -x "$bin" ] || bin=$(command -v diskindexer 2>/dev/null || true)
-            if [ -n "$bin" ]; then printf 'ondemand\n%s\n%s\n' "$p" "$bin"; exit 0; fi
-            printf 'missing\n%s\n' "$p"; exit 3
-            """
-    }
-
     /// Finds the server's socket (as an absolute path) or how to start one,
     /// over the master connection, so failures come with a useful message.
-    private func findServer(on host: String, mux: [String]) async throws -> FoundServer {
-        let path = socketPath?.trimmingCharacters(in: .whitespaces).nilIfEmpty ?? Self.defaultSocket
-        guard !path.contains("'"), !path.contains("\"") else {
-            throw ProcessFailure(message: "The socket path can't contain quotes.")
-        }
-        // Run through sh explicitly so it works whatever the login shell is.
-        let command = "sh -c " + Self.shellQuote(Self.findServerScript(socketPath: path))
+    private func findServer(on host: String, mux: [String]) async throws -> ServerLookup.Found {
+        let command = try ServerLookup.command(socketPath: socketPath)
         let r = try await runCommand(Self.ssh, mux + [host, command])
-        let lines = r.stdout.split(separator: "\n").map(String.init)
-        switch r.status {
-        case 0 where lines.first == "socket" && lines.count >= 2:
-            return FoundServer(socket: lines[1])
-        case 0 where lines.first == "ondemand" && lines.count >= 3:
-            return FoundServer(socket: lines[1], onDemandBinary: lines[2])
-        case 3:
-            // Nothing installed: the app offers to set it up.
-            throw ConnectionFailure("""
-                diskindexer isn't installed on \(displayName).
-                Set it up from here, or install it there yourself (see the README).
-                """, isTransient: true, reason: .notRunning)
-        case 255:
-            throw sshFailure(r.stderr, host: host)
-        default:
-            throw ConnectionFailure("Checking diskindexer on \(host) failed: \(r.stderr.isEmpty ? r.stdout : r.stderr)", isTransient: true)
-        }
+        if r.status == 255 { throw sshFailure(r.stderr, host: host) }
+        return try ServerLookup.parse(r.stdout, stderr: r.stderr, serverName: displayName)
     }
 
     func disconnect() {
@@ -425,6 +378,3 @@ enum Log {
     static let connect = Logger(subsystem: "com.virajchitnis.diskindexer", category: "connect")
 }
 
-extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
-}

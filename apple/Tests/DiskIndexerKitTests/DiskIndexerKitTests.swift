@@ -387,3 +387,57 @@ struct DiskIndexerKitTests {
         #expect(NetworkWatcher.signature(status: "satisfied", interfaces: ["utun3", "en0"]) == "satisfied:en0,utun3")
     }
 }
+
+// MARK: Server lookup
+
+/// Runs ServerLookup's command with sh, in a scratch HOME.
+private func runLookup(home: URL, socket: String? = nil) throws -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+    p.arguments = ["-c", try ServerLookup.command(socketPath: socket)]
+    p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+    let out = Pipe()
+    p.standardOutput = out
+    try p.run()
+    p.waitUntilExit()
+    return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+}
+
+@Test func lookupFindsABinaryToStartOnDemand() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let bin = home.appendingPathComponent(".local/bin/diskindexer")
+    try FileManager.default.createDirectory(at: bin.deletingLastPathComponent(), withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: bin.path, contents: Data("#!/bin/sh\n".utf8),
+                                   attributes: [.posixPermissions: 0o755])
+
+    let found = try ServerLookup.parse(try runLookup(home: home), stderr: "", serverName: "box")
+    #expect(found == ServerLookup.Found(socket: home.path + "/.config/diskindexer/server.sock",
+                                        binary: bin.path, onDemand: true))
+    #expect(ServerLookup.onDemandCommand(found)
+            == "'\(bin.path)' serve --stdin-watch --listen 'unix:\(found.socket)'")
+}
+
+@Test func lookupReportsNothingInstalled() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let out = try runLookup(home: home, socket: "/tmp/elsewhere.sock")
+    #expect(out == "missing\n/tmp/elsewhere.sock\n")
+    #expect(throws: ConnectionFailure.self) { try ServerLookup.parse(out, stderr: "", serverName: "box") }
+    do {
+        _ = try ServerLookup.parse(out, stderr: "", serverName: "box")
+    } catch let f as ConnectionFailure {
+        #expect(f.reason == .notRunning)
+    }
+}
+
+@Test func lookupParsesARunningServer() throws {
+    #expect(try ServerLookup.parse("socket\n/s.sock\n/bin/di\n", stderr: "", serverName: "box")
+            == ServerLookup.Found(socket: "/s.sock", binary: "/bin/di", onDemand: false))
+    // A service with no binary the script could find.
+    #expect(try ServerLookup.parse("socket\n/s.sock\n\n", stderr: "", serverName: "box")
+            == ServerLookup.Found(socket: "/s.sock", binary: nil, onDemand: false))
+    #expect(throws: ConnectionFailure.self) { try ServerLookup.parse("", stderr: "boom", serverName: "box") }
+    #expect(throws: ConnectionFailure.self) { try ServerLookup.command(socketPath: "/it's.sock") }
+}
